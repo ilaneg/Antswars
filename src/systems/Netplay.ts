@@ -83,11 +83,10 @@ class NetplayManager {
 
     this.peer.on('connection', (connRaw) => {
       this.conn = connRaw as DataConnection
-      this.bindConnection()
+      // mapSeed MUST be set before bindConnection: if the data channel fires `open`
+      // synchronously, the seed would otherwise never be sent (guest times out).
       this.mapSeed = Math.floor(Math.random() * 1_000_000_000)
-      this.connected = true
-      this.lastMessageAt = Date.now()
-      this.onReady?.()
+      this.bindConnection()
     })
 
     return { code: this.code }
@@ -96,7 +95,8 @@ class NetplayManager {
   async joinGame(code: string): Promise<void> {
     this.reset()
     this.role = 'guest'
-    this.code = code
+    this.code = this.normalizeJoinCode(code)
+    if (!this.code) throw new Error('Code vide')
     const Peer = window.Peer
     if (!Peer) throw new Error('PeerJS indisponible')
     this.peer = new Peer()
@@ -135,15 +135,20 @@ class NetplayManager {
 
   private bindConnection(): void {
     if (!this.conn) return
-    this.conn.on('open', () => {
+    let opened = false
+    const onOpen = () => {
+      if (opened) return
+      opened = true
       this.connected = true
       this.lastMessageAt = Date.now()
-      // Send seed only after data channel is truly open.
-      if (this.role === 'host' && this.mapSeed !== 0) {
+      if (this.role === 'host') {
         this.sendRaw({ type: 'seed', seed: this.mapSeed })
+        this.onReady?.()
       }
       this.startHeartbeat()
-    })
+    }
+    this.conn.on('open', onOpen)
+    if (this.conn.open) onOpen()
     this.conn.on('data', (payload: unknown) => {
       this.lastMessageAt = Date.now()
       const msg = payload as WireMessage
@@ -191,6 +196,11 @@ class NetplayManager {
     let s = ''
     for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)]
     return `ANT-${s}`
+  }
+
+  /** Match host Peer id (ANT-XXXX is always uppercase, no spaces). */
+  private normalizeJoinCode(raw: string): string {
+    return raw.trim().replace(/\s+/g, '').toUpperCase()
   }
 }
 

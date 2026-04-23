@@ -61,8 +61,10 @@ export class GameScene extends Phaser.Scene {
   private combatGfx!: Phaser.GameObjects.Graphics
   private pheroGfx!: Phaser.GameObjects.Graphics
   private fogGfx!: Phaser.GameObjects.Graphics
-  private pheroTextGroup: Phaser.GameObjects.Text[] = []
-  private resourceTextGroup: Phaser.GameObjects.Text[] = []
+  /** Reused labels — avoid creating/destroying Text every frame. */
+  private pheroLabelById = new Map<string, { icon: Phaser.GameObjects.Text; badge: Phaser.GameObjects.Text }>()
+  private resourceEmojiByKey = new Map<string, Phaser.GameObjects.Text>()
+  private fogGfxDirty = true
   private buildingLabels = new Map<string, Phaser.GameObjects.Text>()
   private workerSprites = new Map<string, Phaser.GameObjects.Sprite>()
   private warriorSprites = new Map<string, Phaser.GameObjects.Sprite>()
@@ -240,10 +242,17 @@ export class GameScene extends Phaser.Scene {
       for (const sprite of this.warriorSprites.values()) sprite.destroy()
       for (const label of this.buildingLabels.values()) label.destroy()
       for (const t of this.buildFloatingTexts) t.destroy()
+      for (const pair of this.pheroLabelById.values()) {
+        pair.icon.destroy()
+        pair.badge.destroy()
+      }
+      for (const t of this.resourceEmojiByKey.values()) t.destroy()
       this.workerSprites.clear()
       this.warriorSprites.clear()
       this.buildingLabels.clear()
       this.buildFloatingTexts = []
+      this.pheroLabelById.clear()
+      this.resourceEmojiByKey.clear()
     })
     this.scene.launch('UIScene')
   }
@@ -277,8 +286,9 @@ export class GameScene extends Phaser.Scene {
     })
   }
 
-  private syncWorkerSprites(): void {
+  private syncWorkerSprites(now: number): void {
     const workerIds = new Set<string>()
+    const enemyAntIds = new Set(this.enemyColony.ants.map(a => a.id))
     for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
       if (ant.type !== AntType.WORKER) continue
       workerIds.add(ant.id)
@@ -292,10 +302,12 @@ export class GameScene extends Phaser.Scene {
       const prevX = (sprite.getData('prevX') as number | undefined) ?? ant.x
       if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
       sprite.setData('prevX', ant.x)
-      const jitterX = ant.digTarget && ant.state === AntState.WORKING ? (Math.random() - 0.5) * 2 : 0
-      const jitterY = ant.digTarget && ant.state === AntState.WORKING ? (Math.random() - 0.5) * 2 : 0
+      const wobble = ant.digTarget && ant.state === AntState.WORKING
+      const jSeed = ant.id.length * 17 + ant.id.charCodeAt(0)
+      const jitterX = wobble ? Math.sin(now * 0.011 + jSeed) * 1.1 : 0
+      const jitterY = wobble ? Math.cos(now * 0.013 + jSeed * 2) * 1.1 : 0
       sprite.setPosition(ant.x + jitterX, ant.y + jitterY)
-      if (this.enemyColony.ants.includes(ant)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
+      if (enemyAntIds.has(ant.id)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
       else sprite.setVisible(true)
       sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
       if (ant.state === AntState.DEAD) sprite.stop()
@@ -311,6 +323,7 @@ export class GameScene extends Phaser.Scene {
 
   private syncWarriorSprites(): void {
     const warriorIds = new Set<string>()
+    const enemyAntIds = new Set(this.enemyColony.ants.map(a => a.id))
     for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
       if (ant.type !== AntType.WARRIOR) continue
       warriorIds.add(ant.id)
@@ -325,7 +338,7 @@ export class GameScene extends Phaser.Scene {
       if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
       sprite.setData('prevX', ant.x)
       sprite.setPosition(ant.x, ant.y)
-      if (this.enemyColony.ants.includes(ant)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
+      if (enemyAntIds.has(ant.id)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
       else sprite.setVisible(true)
       sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
       if (ant.state === AntState.DEAD) sprite.stop()
@@ -464,7 +477,13 @@ export class GameScene extends Phaser.Scene {
   private completeTile(tileX: number, tileY: number): void {
     this.mapData[tileY][tileX] = T.TUNNEL
     this.tilemapLayer.putTileAt(T.TUNNEL, tileX, tileY)
+    this.invalidatePheroTrailCaches()
     if (this.multiplayer) netplay.sendAction({ type: 'tunnel', x: tileX, y: tileY })
+  }
+
+  private invalidatePheroTrailCaches(): void {
+    this.pheromoneSystem.invalidateTrailCache()
+    this.aiPheromoneSystem.invalidateTrailCache()
   }
 
   private getDirtVisualIndex(col: number, row: number): number {
@@ -633,8 +652,6 @@ export class GameScene extends Phaser.Scene {
   private renderPheromones(now: number): void {
     this.pheroGfx.clear()
     this.pheroCursor.clear()
-    for (const txt of this.pheroTextGroup) txt.destroy()
-    this.pheroTextGroup = []
 
     const pulse = 1 + 0.15 * (0.5 + 0.5 * Math.sin(now / 750))
     const center = this.localColony.getDropoffBuilding()
@@ -643,7 +660,9 @@ export class GameScene extends Phaser.Scene {
     const pointer = this.input.activePointer
     this.updatePheromoneModeFromKeys()
 
+    const seenPheroIds = new Set<string>()
     for (const p of this.pheromoneSystem.points) {
+      seenPheroIds.add(p.id)
       const { x, y } = tileToWorld(p.col, p.row)
       const color = pheroColor(p.kind)
       this.pheroGfx.fillStyle(color, 0.85)
@@ -651,20 +670,41 @@ export class GameScene extends Phaser.Scene {
       this.pheroGfx.lineStyle(2, color, 0.9)
       this.pheroGfx.strokeCircle(x, y, 24 * pulse)
 
-      const icon = this.add.text(x, y, pheroIcon(p.kind), {
-        fontSize: '18px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 4,
-      }).setOrigin(0.5).setDepth(8.5)
-      const badge = this.add.text(x + 18, y - 18, `×${this.pheromoneSystem.assignedCounts.get(p.id) ?? 0}`, {
-        fontSize: '12px', color: '#111', backgroundColor: '#fff', fontFamily: 'monospace',
-      }).setOrigin(0.5).setDepth(8.5)
-      this.pheroTextGroup.push(icon, badge)
+      let labels = this.pheroLabelById.get(p.id)
+      if (!labels) {
+        labels = {
+          icon: this.add.text(x, y, pheroIcon(p.kind), {
+            fontSize: '18px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 4,
+          }).setOrigin(0.5).setDepth(8.5),
+          badge: this.add.text(x + 18, y - 18, '', {
+            fontSize: '12px', color: '#111', backgroundColor: '#fff', fontFamily: 'monospace',
+          }).setOrigin(0.5).setDepth(8.5),
+        }
+        this.pheroLabelById.set(p.id, labels)
+      }
+      labels.icon.setText(pheroIcon(p.kind))
+      labels.icon.setPosition(x, y)
+      labels.badge.setPosition(x + 18, y - 18)
+      labels.badge.setText(`×${this.pheromoneSystem.assignedCounts.get(p.id) ?? 0}`)
 
       if (this.hoveredPheroId === p.id && pheroRadiusTiles(p.kind) > 0) {
         this.drawDashedCircle(this.pheroGfx, x, y, pheroRadiusTiles(p.kind) * TILE_SIZE, color)
       }
 
-      const path = this.pheromoneSystem.getTrailPath(nestCol, nestRow, p.col, p.row, (c, r) => this.isPassable(c, r))
+      const path = this.pheromoneSystem.getTrailPath(
+        nestCol, nestRow, p.col, p.row,
+        (c, r) => this.isPassable(c, r),
+        p.id
+      )
       this.drawDashedTrail(path, color, this.pheromoneSystem.dashOffset)
+    }
+
+    for (const id of [...this.pheroLabelById.keys()]) {
+      if (seenPheroIds.has(id)) continue
+      const pair = this.pheroLabelById.get(id)!
+      pair.icon.destroy()
+      pair.badge.destroy()
+      this.pheroLabelById.delete(id)
     }
 
     if (this.pheromoneSystem.mode) {
@@ -884,6 +924,7 @@ export class GameScene extends Phaser.Scene {
         if (this.getTile(action.x, action.y) === T.DIRT) {
           this.mapData[action.y][action.x] = T.TUNNEL
           this.tilemapLayer.putTileAt(T.TUNNEL, action.x, action.y)
+          this.invalidatePheroTrailCaches()
         }
       } else if (action.type === 'spawn') {
         if (!this.enemyColony.ants.some(a => a.id === action.id)) {
@@ -981,15 +1022,15 @@ export class GameScene extends Phaser.Scene {
 
   private renderResources(now: number): void {
     this.resourceGfx.clear()
-    for (const txt of this.resourceTextGroup) txt.destroy()
-    this.resourceTextGroup = []
     const S = TILE_SIZE
+    const seenEmojiKeys = new Set<string>()
     for (const resource of this.resourceSystem.resources) {
       const isVisibleNow = resource.tiles.some(t => this.isTileVisible(t.col, t.row))
       if (isVisibleNow) this.discoveredResourceIds.add(resource.id)
       if (!this.discoveredResourceIds.has(resource.id)) continue
       const life = Phaser.Math.Clamp((resource.expiresAt - now) / (resource.expiresAt - resource.spawnedAt), 0, 1)
       const color = this.blendColor(resource.color, 0x444444, 1 - life)
+      let ti = 0
       for (const tile of resource.tiles) {
         const px = tile.col * S
         const py = tile.row * S
@@ -1003,10 +1044,17 @@ export class GameScene extends Phaser.Scene {
           resource.type === ResourceType.BRANCH ||
           resource.type === ResourceType.LEAF_PILE
         ) {
-          const txt = this.add.text(px + S / 2, py + S / 2, '🪵', {
-            fontSize: '13px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 2,
-          }).setOrigin(0.5).setDepth(6.7)
-          this.resourceTextGroup.push(txt)
+          const ek = `${resource.id}-${ti++}`
+          seenEmojiKeys.add(ek)
+          let txt = this.resourceEmojiByKey.get(ek)
+          if (!txt) {
+            txt = this.add.text(px + S / 2, py + S / 2, '🪵', {
+              fontSize: '13px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 2,
+            }).setOrigin(0.5).setDepth(6.7)
+            this.resourceEmojiByKey.set(ek, txt)
+          }
+          txt.setPosition(px + S / 2, py + S / 2)
+          txt.setVisible(true)
         }
       }
 
@@ -1027,6 +1075,12 @@ export class GameScene extends Phaser.Scene {
       this.resourceGfx.fillRect(bx, by, bw, bh)
       this.resourceGfx.fillStyle(0x66dd66, 0.95)
       this.resourceGfx.fillRect(bx, by, bw * ratio, bh)
+    }
+
+    for (const ek of [...this.resourceEmojiByKey.keys()]) {
+      if (seenEmojiKeys.has(ek)) continue
+      this.resourceEmojiByKey.get(ek)!.destroy()
+      this.resourceEmojiByKey.delete(ek)
     }
   }
 
@@ -1173,10 +1227,11 @@ export class GameScene extends Phaser.Scene {
         this.antGfx.fillCircle(ant.x, ant.y - radius - 3, 2.5)
       }
       if (ant.waitingForTunnel) {
-        const warn = this.add.text(ant.x, ant.y - radius - 10, '⚠', {
-          fontSize: '12px', color: '#ffcc44', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3,
-        }).setOrigin(0.5).setDepth(8.6)
-        this.pheroTextGroup.push(warn)
+        const wy = ant.y - radius - 10
+        this.antGfx.fillStyle(0xffcc44, 1)
+        this.antGfx.fillTriangle(ant.x, wy - 6, ant.x - 6, wy + 4, ant.x + 6, wy + 4)
+        this.antGfx.lineStyle(1.5, 0x000000, 0.85)
+        this.antGfx.strokeTriangle(ant.x, wy - 6, ant.x - 6, wy + 4, ant.x + 6, wy + 4)
       }
     }
   }
@@ -1263,7 +1318,7 @@ export class GameScene extends Phaser.Scene {
     this.applyPendingRemoteActions()
     if (this.multiplayer) this.syncLocalMoves(now)
     for (const ant of this.enemyColony.ants) ant.updateNetworkInterpolation(delta)
-    this.syncWorkerSprites()
+    this.syncWorkerSprites(now)
     this.syncWarriorSprites()
 
     if (this.enemyColony.isDefeated()) {
@@ -1521,11 +1576,12 @@ export class GameScene extends Phaser.Scene {
       if (!b.isAlive()) continue
       this.revealCircle(b.tileX + Math.floor(b.width / 2), b.tileY + Math.floor(b.height / 2), 5)
     }
+    this.fogGfxDirty = true
   }
 
   private renderFogOfWar(): void {
+    if (!this.fogGfxDirty) return
     this.fogGfx.clear()
-    this.fogGfx.fillStyle(0x000000, 1)
     for (let row = 0; row < MAP_HEIGHT; row++) {
       for (let col = 0; col < MAP_WIDTH; col++) {
         if (this.isTileVisible(col, row)) continue
@@ -1534,6 +1590,7 @@ export class GameScene extends Phaser.Scene {
         this.fogGfx.fillRect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
       }
     }
+    this.fogGfxDirty = false
   }
 
   private isTileVisibleToEnemy(col: number, row: number): boolean {

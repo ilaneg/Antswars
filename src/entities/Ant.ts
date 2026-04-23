@@ -29,6 +29,9 @@ export class Ant {
   netTargetY: number | null = null
   pheromoneId: string | null = null
   pheromoneType: PheromoneType | null = null
+  /** Last known pheromone tile (for skipping redundant A* when assignment unchanged). */
+  pheromoneGoalCol: number | null = null
+  pheromoneGoalRow: number | null = null
   waitingForTunnel = false
   digTarget: TilePos | null = null   // set by TunnelSystem when assigned a dig task
 
@@ -114,6 +117,10 @@ export class Ant {
   setPheromoneAssignment(id: string | null, type: PheromoneType | null): void {
     this.pheromoneId = id
     this.pheromoneType = type
+    if (id === null) {
+      this.pheromoneGoalCol = null
+      this.pheromoneGoalRow = null
+    }
   }
 
   updateNetworkInterpolation(delta: number): void {

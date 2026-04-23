@@ -15,6 +15,7 @@ export interface PheromonePoint {
 }
 
 type Passable = (col: number, row: number) => boolean
+type TilePos = { col: number; row: number }
 
 const LIMITS: Record<PheroKind, number> = { FOOD: 5, ATTACK: 3, RALLY: 1 }
 
@@ -27,7 +28,13 @@ export class PheromoneSystem {
   mode: PheroKind | null = null
   warningMessage = ''
 
+  private trailPathCache = new Map<string, { fromC: number; fromR: number; toC: number; toR: number; path: TilePos[] }>()
+
   setMode(mode: PheroKind | null): void { this.mode = mode }
+
+  invalidateTrailCache(): void {
+    this.trailPathCache.clear()
+  }
 
   count(kind: PheroKind): number { return this.points.filter(p => p.kind === kind).length }
   limit(kind: PheroKind): number { return LIMITS[kind] }
@@ -36,12 +43,14 @@ export class PheromoneSystem {
     if (kind === 'RALLY') this.points = this.points.filter(p => p.kind !== 'RALLY')
     if (this.count(kind) >= LIMITS[kind]) return false
     this.points.push({ id: `phero_${_id++}`, kind, col, row })
+    this.invalidateTrailCache()
     return true
   }
 
   clearAll(): void {
     this.points = []
     this.assignedCounts.clear()
+    this.invalidateTrailCache()
   }
 
   pointAt(col: number, row: number): PheromonePoint | null {
@@ -51,6 +60,7 @@ export class PheromoneSystem {
   removePoint(id: string): void {
     this.points = this.points.filter(p => p.id !== id)
     this.assignedCounts.delete(id)
+    this.invalidateTrailCache()
   }
 
   movePoint(id: string, col: number, row: number): void {
@@ -58,6 +68,7 @@ export class PheromoneSystem {
     if (!p) return
     p.col = col
     p.row = row
+    this.invalidateTrailCache()
   }
 
   update(
@@ -130,19 +141,45 @@ export class PheromoneSystem {
     }
   }
 
-  getTrailPath(fromCol: number, fromRow: number, toCol: number, toRow: number, passable: Passable): { col: number; row: number }[] {
-    return AntEntity.aStar({ col: fromCol, row: fromRow }, { col: toCol, row: toRow }, passable)
+  getTrailPath(
+    fromCol: number,
+    fromRow: number,
+    toCol: number,
+    toRow: number,
+    passable: Passable,
+    cacheKey?: string
+  ): TilePos[] {
+    if (cacheKey) {
+      const hit = this.trailPathCache.get(cacheKey)
+      if (hit && hit.fromC === fromCol && hit.fromR === fromRow && hit.toC === toCol && hit.toR === toRow) return hit.path
+    }
+    const path = AntEntity.aStar({ col: fromCol, row: fromRow }, { col: toCol, row: toRow }, passable)
+    if (cacheKey) this.trailPathCache.set(cacheKey, { fromC: fromCol, fromR: fromRow, toC: toCol, toR: toRow, path })
+    return path
   }
 
   private assignEqually(ants: Ant[], points: PheromonePoint[], passable: Passable): void {
-    for (const ant of ants) ant.setPheromoneAssignment(null, null)
-    if (points.length === 0) return
+    if (points.length === 0) {
+      for (const ant of ants) ant.setPheromoneAssignment(null, null)
+      return
+    }
     const sorted = [...ants].sort((a, b) => a.id.localeCompare(b.id))
     for (let i = 0; i < sorted.length; i++) {
       const p = points[i % points.length]
       const ant = sorted[i]
+      const sameTarget =
+        ant.pheromoneId === p.id &&
+        ant.pheromoneGoalCol === p.col &&
+        ant.pheromoneGoalRow === p.row
+
       ant.setPheromoneAssignment(p.id, p.kind)
+      ant.pheromoneGoalCol = p.col
+      ant.pheromoneGoalRow = p.row
       this.assignedCounts.set(p.id, (this.assignedCounts.get(p.id) ?? 0) + 1)
+
+      if (sameTarget && ant.path.length > 0) continue
+      if (sameTarget && ant.col === p.col && ant.row === p.row) continue
+
       const path = AntEntity.aStar({ col: ant.col, row: ant.row }, { col: p.col, row: p.row }, passable)
       if (path.length === 0 && (ant.col !== p.col || ant.row !== p.row)) {
         ant.waitingForTunnel = true
