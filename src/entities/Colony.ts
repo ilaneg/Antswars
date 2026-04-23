@@ -31,11 +31,11 @@ export class Colony {
 
   // ─── Spawning ──────────────────────────────────────────────────────────────
 
-  spawnAnt(type: AntType): Ant | null {
+  spawnAnt(type: AntType, forcedId?: string): Ant | null {
     if (this.ants.length >= MAX_ANTS) return null
     const shaftCol  = this.baseCol + 3
     const guardPost = { col: shaftCol, row: 2 }
-    const ant = new Ant(type, shaftCol, this.baseDepth, guardPost)
+    const ant = new Ant(type, shaftCol, this.baseDepth, guardPost, forcedId)
     this.ants.push(ant)
     return ant
   }

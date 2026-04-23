@@ -24,13 +24,15 @@ export class Ant {
   combatAssignmentId: string | null = null
   attackMoveTarget: TilePos | null = null
   carryingCorpseId: string | null = null
+  netTargetX: number | null = null
+  netTargetY: number | null = null
   digTarget: TilePos | null = null   // set by TunnelSystem when assigned a dig task
 
   private path: TilePos[] = []
   private behaviorTimer = 0
 
-  constructor(type: AntType, startCol: number, startRow: number, homePos: TilePos) {
-    this.id    = `ant_${_nextId++}`
+  constructor(type: AntType, startCol: number, startRow: number, homePos: TilePos, forcedId?: string) {
+    this.id    = forcedId ?? `ant_${_nextId++}`
     this.type  = type
     this.state = AntState.IDLE
     this.x     = startCol * TILE_SIZE + TILE_SIZE / 2
@@ -98,6 +100,18 @@ export class Ant {
 
   clearPath(): void {
     this.path = []
+  }
+
+  setNetworkTarget(x: number, y: number): void {
+    this.netTargetX = x
+    this.netTargetY = y
+  }
+
+  updateNetworkInterpolation(delta: number): void {
+    if (this.netTargetX === null || this.netTargetY === null || this.state === AntState.DEAD) return
+    const alpha = Math.min(1, delta / 100)
+    this.x += (this.netTargetX - this.x) * alpha
+    this.y += (this.netTargetY - this.y) * alpha
   }
 
   // ─── Behaviour AI ──────────────────────────────────────────────────────────

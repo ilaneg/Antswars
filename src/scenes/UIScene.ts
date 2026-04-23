@@ -30,6 +30,7 @@ export class UIScene extends Phaser.Scene {
   private materialsText!: Phaser.GameObjects.Text
   private minimapGfx!: Phaser.GameObjects.Graphics
   private dangerText!: Phaser.GameObjects.Text
+  private lagText!: Phaser.GameObjects.Text
 
   private warriorPct = 30
 
@@ -133,6 +134,13 @@ export class UIScene extends Phaser.Scene {
       stroke: '#220000',
       strokeThickness: 6,
     }).setOrigin(0.5, 0).setDepth(30)
+    this.lagText = this.add.text(CANVAS_WIDTH / 2, 58, '', {
+      fontSize: '18px',
+      color: '#ffcc44',
+      fontFamily: 'monospace',
+      stroke: '#221100',
+      strokeThickness: 4,
+    }).setOrigin(0.5, 0).setDepth(30)
   }
 
   private pushRatio(): void {
@@ -142,7 +150,7 @@ export class UIScene extends Phaser.Scene {
 
   update(): void {
     const gs     = this.scene.get('GameScene') as GameScene
-    const colony = gs?.playerColony
+    const colony = gs?.localColony
     const ts     = gs?.tunnelSystem
 
     if (colony) {
@@ -179,6 +187,7 @@ export class UIScene extends Phaser.Scene {
 
     this.renderMinimap(gs)
     this.dangerText.setText(gs.getDangerOverlayText())
+    this.lagText.setText(gs.getLagText())
   }
 
   private renderMinimap(gs: GameScene): void {

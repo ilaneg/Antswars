@@ -1,7 +1,10 @@
 import Phaser from 'phaser'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../config/constants'
+import { netplay } from '../systems/Netplay'
 
 export class MenuScene extends Phaser.Scene {
+  private statusText!: Phaser.GameObjects.Text
+
   constructor() {
     super({ key: 'MenuScene' })
   }
@@ -24,17 +27,47 @@ export class MenuScene extends Phaser.Scene {
 
     const hostBtn = this.createImageButton(cx, cy - 20, 'btn-host')
     const joinBtn = this.createImageButton(cx, cy + 230, 'btn-join-clean')
+    this.statusText = this.add.text(cx, cy + 330, '', {
+      fontSize: '18px',
+      color: '#fff5cc',
+      fontFamily: 'monospace',
+      align: 'center',
+      stroke: '#2a160c',
+      strokeThickness: 4,
+    }).setOrigin(0.5)
 
-    hostBtn.on('pointerup', () => {
-      this.scene.stop('UIScene')
-      this.scene.start('GameScene', { role: 'host' })
+    hostBtn.on('pointerup', async () => {
+      hostBtn.disableInteractive()
+      joinBtn.disableInteractive()
+      try {
+        const { code } = await netplay.hostGame()
+        this.statusText.setText(`Code: ${code}\nEn attente du joueur...`)
+        netplay.onReady = () => {
+          this.scene.stop('UIScene')
+          this.scene.start('GameScene', { role: 'host', seed: netplay.mapSeed, multiplayer: true })
+        }
+      } catch {
+        this.statusText.setText('Impossible de créer la partie.')
+        hostBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+        joinBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+      }
     })
 
-    joinBtn.on('pointerup', () => {
+    joinBtn.on('pointerup', async () => {
       const code = window.prompt('Entre le code de la partie :')
       if (!code?.trim()) return
-      this.scene.stop('UIScene')
-      this.scene.start('GameScene', { role: 'guest', peerId: code.trim() })
+      hostBtn.disableInteractive()
+      joinBtn.disableInteractive()
+      this.statusText.setText('Connexion en cours...')
+      try {
+        await netplay.joinGame(code.trim())
+        this.scene.stop('UIScene')
+        this.scene.start('GameScene', { role: 'guest', seed: netplay.mapSeed, multiplayer: true })
+      } catch {
+        this.statusText.setText('Connexion impossible. Vérifie le code.')
+        hostBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+        joinBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+      }
     })
 
     // Keyboard fallback
@@ -50,7 +83,7 @@ export class MenuScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setOrigin(0.5)
 
-    this.add.text(cx, CANVAS_HEIGHT - 52, '1: Héberger   2: Rejoindre', {
+    this.add.text(cx, CANVAS_HEIGHT - 52, '1: Créer une partie   2: Rejoindre une partie', {
       fontSize: '12px',
       color: '#f2dcc3',
       stroke: '#4b2a18',

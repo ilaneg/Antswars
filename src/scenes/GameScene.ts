@@ -14,6 +14,8 @@ import { TunnelSystem } from '../systems/TunnelSystem'
 import { ResourceSystem } from '../systems/ResourceSystem'
 import { CombatSystem } from '../systems/CombatSystem'
 import { SpawnSystem } from '../systems/SpawnSystem'
+import { netplay } from '../systems/Netplay'
+import type { NetAction, NetRole } from '../systems/Netplay'
 import { ResourceType } from '../types'
 
 const T = TileType
@@ -41,6 +43,8 @@ export class GameScene extends Phaser.Scene {
   selectedBuilding: Building | null = null
   frontlineCol = MAP_WIDTH / 2
   isColonyInDanger = false
+  localColony!: Colony
+  enemyColony!: Colony
 
   // ── Private ───────────────────────────────────────────────────────────────
   private tilemapLayer!: Phaser.Tilemaps.TilemapLayer
@@ -66,10 +70,25 @@ export class GameScene extends Phaser.Scene {
   private corpseTasks: CorpseTask[] = []
   private audioCtx: AudioContext | null = null
   private lastAlertAt = 0
+  private role: NetRole = 'host'
+  private multiplayer = false
+  private mapSeed = 1337
+  private seededRand = mulberry32(1337)
+  private pendingRemoteActions: { action: NetAction; applyAt: number }[] = []
+  private lastMoveSyncAt = 0
+  private prevEnemyBuildingHp = new Map<string, number>()
+  private prevLocalFood = 0
 
   constructor() { super({ key: 'GameScene' }) }
 
-  init(_data: { role: 'host' | 'guest'; peerId?: string }): void {}
+  init(data: { role: 'host' | 'guest'; seed?: number; multiplayer?: boolean }): void {
+    this.role = data.role
+    this.multiplayer = !!data.multiplayer
+    if (typeof data.seed === 'number') {
+      this.mapSeed = data.seed
+      this.seededRand = mulberry32(this.mapSeed)
+    }
+  }
 
   // ─── Assets ────────────────────────────────────────────────────────────────
 
@@ -144,12 +163,28 @@ export class GameScene extends Phaser.Scene {
     this.setupCamera()
     this.setupInput()
     this.setupColonies()
+    this.localColony = this.role === 'host' ? this.playerColony : this.aiColony
+    this.enemyColony = this.role === 'host' ? this.aiColony : this.playerColony
+    this.prevLocalFood = this.localColony.resources.food
+    this.prevEnemyBuildingHp.clear()
+    for (const b of this.enemyColony.buildings) this.prevEnemyBuildingHp.set(b.type, b.hp)
     this.tunnelSystem = new TunnelSystem()
     this.resourceSystem = new ResourceSystem()
     this.resourceSystem.init(this.time.now, (c, r) => this.getTile(c, r), [
       ...this.playerColony.buildings,
       ...this.aiColony.buildings,
     ])
+    if (this.multiplayer) {
+      netplay.onAction = (action) => {
+        this.pendingRemoteActions.push({ action, applyAt: Date.now() + 100 })
+      }
+      netplay.onDisconnected = () => {
+        this.scene.pause()
+        this.add.text(this.cameras.main.midPoint.x, 54, 'Connexion perdue, en attente...', {
+          fontSize: '26px', color: '#ff6666', fontFamily: 'monospace', stroke: '#000', strokeThickness: 6,
+        }).setOrigin(0.5).setDepth(60).setScrollFactor(0)
+      }
+    }
     this.scene.launch('UIScene')
   }
 
@@ -204,7 +239,7 @@ export class GameScene extends Phaser.Scene {
     )
     for (let row = 2; row < MAP_HEIGHT; row++) {
       for (let col = 0; col < MAP_WIDTH; col++) {
-        if (grid[row][col] === T.DIRT && !this.inBaseZone(col, row) && Math.random() < 0.08)
+        if (grid[row][col] === T.DIRT && !this.inBaseZone(col, row) && this.seededRand() < 0.08)
           this.growCluster(grid, row, col)
       }
     }
@@ -220,11 +255,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private growCluster(grid: number[][], startRow: number, startCol: number): void {
-    const target = 3 + Math.floor(Math.random() * 6)
+    const target = 3 + Math.floor(this.seededRand() * 6)
     const frontier: [number, number][] = [[startRow, startCol]]
     let placed = 0
     while (frontier.length > 0 && placed < target) {
-      const idx = Math.floor(Math.random() * frontier.length)
+      const idx = Math.floor(this.seededRand() * frontier.length)
       const [r, c] = frontier.splice(idx, 1)[0]
       if (r < 2 || r >= MAP_HEIGHT || c < 0 || c >= MAP_WIDTH) continue
       if (grid[r][c] !== T.DIRT || this.inBaseZone(c, r)) continue
@@ -291,6 +326,7 @@ export class GameScene extends Phaser.Scene {
   private completeTile(tileX: number, tileY: number): void {
     this.mapData[tileY][tileX] = T.TUNNEL
     this.tilemapLayer.putTileAt(T.TUNNEL, tileX, tileY)
+    if (this.multiplayer) netplay.sendAction({ type: 'tunnel', x: tileX, y: tileY })
   }
 
   private getDirtVisualIndex(col: number, row: number): number {
@@ -457,6 +493,22 @@ export class GameScene extends Phaser.Scene {
     )
     // Ensure dead state is visible immediately.
     for (const ant of [...killedP, ...killedAI]) ant.state = AntState.DEAD
+    if (this.multiplayer) {
+      const sentIds = new Set<string>()
+      const ownKills = this.role === 'host' ? killedP : killedAI
+      for (const dead of ownKills) {
+        if (sentIds.has(dead.id)) continue
+        sentIds.add(dead.id)
+        netplay.sendAction({ type: 'death', id: dead.id })
+      }
+      for (const b of this.enemyColony.buildings) {
+        const prev = this.prevEnemyBuildingHp.get(b.type)
+        if (typeof prev === 'number' && prev !== b.hp) {
+          netplay.sendAction({ type: 'damage', buildingType: b.type, hp: b.hp })
+        }
+        this.prevEnemyBuildingHp.set(b.type, b.hp)
+      }
+    }
   }
 
   private updateCorpseHandling(): void {
@@ -535,14 +587,16 @@ export class GameScene extends Phaser.Scene {
       this.frontlineCol = (pAvg + aAvg) / 2
     }
 
-    const nearNest = aiWarriors.filter(a => Math.abs(a.col - this.playerColony.baseCol) < 16 && Math.abs(a.row - this.playerColony.baseDepth) < 14).length
+    const localWarriors = this.localColony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
+    const enemyWarriors = this.enemyColony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
+    const nearNest = enemyWarriors.filter(a => Math.abs(a.col - this.localColony.baseCol) < 16 && Math.abs(a.row - this.localColony.baseDepth) < 14).length
     if (nearNest > 5 && now - this.lastAlertAt > 2500) {
       this.playAlert()
       this.lastAlertAt = now
     }
 
-    const throne = this.playerColony.getQueenThrone()
-    this.isColonyInDanger = pWarriors.length === 0 && !!throne && throne.hp / throne.maxHp < 0.3
+    const throne = this.localColony.getQueenThrone()
+    this.isColonyInDanger = localWarriors.length === 0 && !!throne && throne.hp / throne.maxHp < 0.3
   }
 
   private playAlert(): void {
@@ -559,6 +613,46 @@ export class GameScene extends Phaser.Scene {
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22)
     osc.start(now)
     osc.stop(now + 0.23)
+  }
+
+  private applyPendingRemoteActions(): void {
+    if (!this.multiplayer) return
+    const now = Date.now()
+    const due = this.pendingRemoteActions.filter(a => a.applyAt <= now)
+    this.pendingRemoteActions = this.pendingRemoteActions.filter(a => a.applyAt > now)
+    for (const wrapped of due) {
+      const action = wrapped.action
+      if (action.type === 'tunnel') {
+        if (this.getTile(action.x, action.y) === T.DIRT) {
+          this.mapData[action.y][action.x] = T.TUNNEL
+          this.tilemapLayer.putTileAt(T.TUNNEL, action.x, action.y)
+        }
+      } else if (action.type === 'spawn') {
+        if (!this.enemyColony.ants.some(a => a.id === action.id)) {
+          this.enemyColony.spawnAnt(action.antType === 'WORKER' ? AntType.WORKER : AntType.WARRIOR, action.id)
+        }
+      } else if (action.type === 'death') {
+        const ant = this.enemyColony.ants.find(a => a.id === action.id)
+        if (ant) ant.state = AntState.DEAD
+      } else if (action.type === 'move') {
+        const ant = this.enemyColony.ants.find(a => a.id === action.id)
+        if (ant) ant.setNetworkTarget(action.x, action.y)
+      } else if (action.type === 'resource') {
+        this.enemyColony.resources.food += action.amount
+      } else if (action.type === 'damage') {
+        const b = this.localColony.buildings.find(build => build.type === action.buildingType)
+        if (b) b.hp = Math.max(0, action.hp)
+      }
+    }
+  }
+
+  private syncLocalMoves(now: number): void {
+    if (!this.multiplayer || now - this.lastMoveSyncAt < 200) return
+    this.lastMoveSyncAt = now
+    for (const ant of this.localColony.ants) {
+      if (ant.state === AntState.DEAD) continue
+      netplay.sendAction({ type: 'move', id: ant.id, x: ant.x, y: ant.y })
+    }
   }
 
   private findBuildingAt(col: number, row: number): Building | null {
@@ -785,29 +879,49 @@ export class GameScene extends Phaser.Scene {
 
     this.tunnelSystem.update(
       delta,
-      this.playerColony,
+      this.localColony,
       (c, r) => this.isPassable(c, r),
       (x, y) => this.completeTile(x, y)
     )
 
-    this.playerColony.update(delta, (c, r) => this.isPassable(c, r))
-    this.issueAiAttackOrders()
-    this.aiColony.update(delta, (c, r) => this.isPassable(c, r))
-    this.spawnSystem.update(this.playerColony, now)
-    this.spawnSystem.update(this.aiColony, now)
+    const beforeSpawnIds = new Set(this.localColony.ants.map(a => a.id))
+    this.localColony.update(delta, (c, r) => this.isPassable(c, r))
+    if (!this.multiplayer) this.issueAiAttackOrders()
+    if (!this.multiplayer) this.enemyColony.update(delta, (c, r) => this.isPassable(c, r))
+    this.spawnSystem.update(this.localColony, now)
+    if (!this.multiplayer) this.spawnSystem.update(this.enemyColony, now)
+    for (const ant of this.localColony.ants) {
+      if (!beforeSpawnIds.has(ant.id) && this.multiplayer) {
+        netplay.sendAction({ type: 'spawn', antType: ant.type, id: ant.id })
+      }
+    }
     this.updateCombat(now)
     this.updateCorpseHandling()
     this.updateFrontLineAndAlerts(now)
-    this.resourceSystem.update(
-      now,
-      delta,
-      (c, r) => this.getTile(c, r),
-      [...this.playerColony.buildings, ...this.aiColony.buildings],
-      this.playerColony,
-      (c, r) => this.isPassable(c, r)
-    )
+    if (!this.multiplayer) {
+      this.resourceSystem.update(
+        now,
+        delta,
+        (c, r) => this.getTile(c, r),
+        [...this.playerColony.buildings, ...this.aiColony.buildings],
+        this.localColony,
+        (c, r) => this.isPassable(c, r)
+      )
+    }
+    if (this.multiplayer && this.localColony.resources.food > this.prevLocalFood) {
+      netplay.sendAction({
+        type: 'resource',
+        resourceId: 'food',
+        amount: Math.floor(this.localColony.resources.food - this.prevLocalFood),
+      })
+    }
+    this.prevLocalFood = this.localColony.resources.food
 
-    if (this.aiColony.isDefeated()) {
+    this.applyPendingRemoteActions()
+    if (this.multiplayer) this.syncLocalMoves(now)
+    for (const ant of this.enemyColony.ants) ant.updateNetworkInterpolation(delta)
+
+    if (this.enemyColony.isDefeated()) {
       // Immediate player victory when enemy throne is down.
       this.scene.pause('UIScene')
       this.add.text(this.cameras.main.midPoint.x, this.cameras.main.midPoint.y, 'Victoire !', {
@@ -833,6 +947,11 @@ export class GameScene extends Phaser.Scene {
     return this.isColonyInDanger ? 'Votre colonie est en danger !' : ''
   }
 
+  getLagText(): string {
+    if (!this.multiplayer) return ''
+    return netplay.isLagging() ? 'LAG' : ''
+  }
+
   getTile(col: number, row: number): number {
     if (row < 0 || row >= MAP_HEIGHT || col < 0 || col >= MAP_WIDTH) return -1
     return this.mapData[row][col]
@@ -847,5 +966,15 @@ export class GameScene extends Phaser.Scene {
   isPassable(col: number, row: number): boolean {
     const t = this.getTile(col, row)
     return t === T.TUNNEL || t === T.GRASS
+  }
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0
+  return () => {
+    t += 0x6D2B79F5
+    let r = Math.imul(t ^ (t >>> 15), t | 1)
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61)
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296
   }
 }
