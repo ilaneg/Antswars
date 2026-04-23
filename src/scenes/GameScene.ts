@@ -3,10 +3,11 @@ import {
   MAP_WIDTH, MAP_HEIGHT, TILE_SIZE,
   CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, CAMERA_SCROLL_SPEED,
   TILE_COLORS, START_BASES, CANVAS_HEIGHT,
-  BUILDING_CONFIG, BASE_BUILDING_LAYOUT,
+  BUILDING_CONFIG,
+  BETA_SANDBOX_MAX_FOOD, BETA_SANDBOX_MAX_WOOD,
+  BETA_SANDBOX_START_FOOD, BETA_SANDBOX_START_WOOD,
 } from '../config/constants'
 import { TileType, AntType, AntState } from '../types'
-import type { PlayerSide } from '../types'
 import { Colony } from '../entities/Colony'
 import { Building } from '../entities/Building'
 import { Ant } from '../entities/Ant'
@@ -17,6 +18,7 @@ import { SpawnSystem } from '../systems/SpawnSystem'
 import { netplay } from '../systems/Netplay'
 import type { NetAction, NetRole } from '../systems/Netplay'
 import { ResourceType } from '../types'
+import { RESOURCE_SPECS } from '../entities/Resource'
 import { PheromoneSystem, pheroColor, pheroIcon, pheroRadiusTiles, tileToWorld } from '../systems/PheromoneSystem'
 
 const T = TileType
@@ -82,13 +84,14 @@ export class GameScene extends Phaser.Scene {
   private keyD!: Phaser.Input.Keyboard.Key
   private keyF!: Phaser.Input.Keyboard.Key
   private keyR!: Phaser.Input.Keyboard.Key
-  private keyB!: Phaser.Input.Keyboard.Key
   private hitFlashes: HitFlash[] = []
   private corpseTasks: CorpseTask[] = []
   private audioCtx: AudioContext | null = null
   private lastAlertAt = 0
   private role: NetRole = 'host'
   private multiplayer = false
+  /** Solo test : beaucoup de ressources, pas d’IA ni de combat. */
+  betaSandbox = false
   private mapSeed = 1337
   private seededRand = mulberry32(1337)
   private pendingRemoteActions: { action: NetAction; applyAt: number }[] = []
@@ -109,7 +112,6 @@ export class GameScene extends Phaser.Scene {
   private placingStorage = false
   private buildPreviewCol = 0
   private buildPreviewRow = 0
-  private buildPreviewValid = false
   private buildPreviewGfx!: Phaser.GameObjects.Graphics
   private buildFloatingTexts: Phaser.GameObjects.Text[] = []
   private destroyedStorageReleased = new Set<string>()
@@ -118,9 +120,21 @@ export class GameScene extends Phaser.Scene {
 
   constructor() { super({ key: 'GameScene' }) }
 
-  init(data: { role: 'host' | 'guest'; seed?: number; multiplayer?: boolean }): void {
-    this.role = data.role
-    this.multiplayer = !!data.multiplayer
+  init(data: {
+    role: 'host' | 'guest'
+    seed?: number
+    multiplayer?: boolean
+    betaSandbox?: boolean
+  }): void {
+    if (data.betaSandbox) {
+      this.betaSandbox = true
+      this.role = 'host'
+      this.multiplayer = false
+    } else {
+      this.betaSandbox = false
+      this.role = data.role
+      this.multiplayer = !!data.multiplayer
+    }
     if (typeof data.seed === 'number') {
       this.mapSeed = data.seed
       this.seededRand = mulberry32(this.mapSeed)
@@ -212,6 +226,12 @@ export class GameScene extends Phaser.Scene {
     this.setupColonies()
     this.localColony = this.role === 'host' ? this.playerColony : this.aiColony
     this.enemyColony = this.role === 'host' ? this.aiColony : this.playerColony
+    if (this.betaSandbox) {
+      this.playerColony.enableSandboxResourceCaps(BETA_SANDBOX_MAX_FOOD, BETA_SANDBOX_MAX_WOOD)
+      this.playerColony.resources.food = BETA_SANDBOX_START_FOOD
+      this.playerColony.resources.wood = BETA_SANDBOX_START_WOOD
+      this.aiColony.ants = []
+    }
     this.recalculateFogOfWar(this.time.now)
     this.centerCameraOnLocalQueenThrone()
     this.prevLocalFood = this.localColony.resources.food
@@ -233,7 +253,7 @@ export class GameScene extends Phaser.Scene {
           fontSize: '26px', color: '#ff6666', fontFamily: 'monospace', stroke: '#000', strokeThickness: 6,
         }).setOrigin(0.5).setDepth(60).setScrollFactor(0)
       }
-    } else {
+    } else if (!this.betaSandbox) {
       this.aiPheromoneSystem.addPoint('FOOD', this.aiColony.baseCol + 8, this.aiColony.baseDepth + 8)
       this.aiPheromoneSystem.addPoint('ATTACK', this.playerColony.baseCol + 6, this.playerColony.baseDepth + 6)
     }
@@ -477,6 +497,11 @@ export class GameScene extends Phaser.Scene {
   private completeTile(tileX: number, tileY: number): void {
     this.mapData[tileY][tileX] = T.TUNNEL
     this.tilemapLayer.putTileAt(T.TUNNEL, tileX, tileY)
+    for (const colony of [this.playerColony, this.aiColony]) {
+      for (const ant of colony.ants) {
+        if (ant.hasPathTile(tileX, tileY)) ant.clearPath()
+      }
+    }
     this.invalidatePheroTrailCaches()
     if (this.multiplayer) netplay.sendAction({ type: 'tunnel', x: tileX, y: tileY })
   }
@@ -533,7 +558,6 @@ export class GameScene extends Phaser.Scene {
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
     this.keyF = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F)
     this.keyR = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R)
-    this.keyB = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.B)
 
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main
@@ -552,7 +576,6 @@ export class GameScene extends Phaser.Scene {
       const { col, row } = this.ptrToTile(ptr)
       this.buildPreviewCol = col
       this.buildPreviewRow = row
-      this.buildPreviewValid = this.canPlaceStorageAt(col, row)
       this.updatePheromoneModeFromKeys()
 
       if (this.placingStorage) {
@@ -590,7 +613,6 @@ export class GameScene extends Phaser.Scene {
       const { col, row } = this.ptrToTile(ptr)
       this.buildPreviewCol = col
       this.buildPreviewRow = row
-      this.buildPreviewValid = this.canPlaceStorageAt(col, row)
       this.hoveredPheroId = this.pheromoneSystem.pointAt(col, row)?.id ?? null
       if (this.draggingPheroId && ptr.isDown) {
         this.pheromoneSystem.movePoint(this.draggingPheroId, col, row)
@@ -627,12 +649,8 @@ export class GameScene extends Phaser.Scene {
       if (event.repeat) return
       this.toggleDiggersPanel()
     })
-    this.input.keyboard!.on('keydown-DELETE', () => {
-      if (window.confirm('Effacer tous les points ? O/N')) this.pheromoneSystem.clearAll()
-    })
-    this.input.keyboard!.on('keydown-BACKSPACE', () => {
-      if (window.confirm('Effacer tous les points ? O/N')) this.pheromoneSystem.clearAll()
-    })
+    this.input.keyboard!.on('keydown-DELETE',    () => this.pheromoneSystem.clearAll())
+    this.input.keyboard!.on('keydown-BACKSPACE', () => this.pheromoneSystem.clearAll())
   }
 
   // ─── Drawing helpers ───────────────────────────────────────────────────────
@@ -724,9 +742,11 @@ export class GameScene extends Phaser.Scene {
       const a = tileToWorld(path[i - 1].col, path[i - 1].row)
       const b = tileToWorld(path[i].col, path[i].row)
       const len = Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y)
+      if (!Number.isFinite(len) || len <= 0.0001) continue
       const dash = 8; const gap = 6
       let p = -offset
-      while (p < len) {
+      let guard = 0
+      while (p < len && guard++ < 256) {
         const s = Math.max(0, p)
         const e = Math.min(len, p + dash)
         if (e > s) {
@@ -775,6 +795,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateCombat(now: number): void {
+    if (this.betaSandbox) return
     const killedP = this.combatSystem.resolve(
       this.playerColony.ants,
       this.aiColony.ants,
@@ -1239,11 +1260,12 @@ export class GameScene extends Phaser.Scene {
   // ─── Game loop ─────────────────────────────────────────────────────────────
 
   update(_time: number, delta: number): void {
+    const dt = Math.min(Math.max(0, delta), 80)
     const now = this.time.now
     if (now - this.lastFogRecalcAt >= FOG_UPDATE_MS) this.recalculateFogOfWar(now)
     this.updatePheromoneModeFromKeys()
     const cam   = this.cameras.main
-    const speed = CAMERA_SCROLL_SPEED * (delta / 1000) / cam.zoom
+    const speed = CAMERA_SCROLL_SPEED * (dt / 1000) / cam.zoom
     const inPheroPlacement = this.pheromoneSystem.mode !== null
     const inBuildPlacement = this.placingStorage
     if (!inPheroPlacement && !inBuildPlacement) {
@@ -1254,7 +1276,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.tunnelSystem.update(
-      delta,
+      dt,
       this.localColony,
       (c, r) => this.isPassable(c, r),
       (x, y) => {
@@ -1264,10 +1286,10 @@ export class GameScene extends Phaser.Scene {
     )
 
     const beforeSpawnIds = new Set(this.localColony.ants.map(a => a.id))
-    this.localColony.update(delta, (c, r) => this.isPassable(c, r))
-    if (!this.multiplayer) this.enemyColony.update(delta, (c, r) => this.isPassable(c, r))
+    this.localColony.update(dt, (c, r) => this.isPassable(c, r))
+    if (!this.multiplayer && !this.betaSandbox) this.enemyColony.update(dt, (c, r) => this.isPassable(c, r))
     this.spawnSystem.update(this.localColony, now, false)
-    if (!this.multiplayer) this.spawnSystem.update(this.enemyColony, now, true)
+    if (!this.multiplayer && !this.betaSandbox) this.spawnSystem.update(this.enemyColony, now, true)
     for (const ant of this.localColony.ants) {
       if (!beforeSpawnIds.has(ant.id) && this.multiplayer) {
         if (this.isTileVisibleToEnemy(ant.col, ant.row)) netplay.sendAction({ type: 'spawn', antType: ant.type, id: ant.id })
@@ -1278,16 +1300,16 @@ export class GameScene extends Phaser.Scene {
     this.updateCombat(now)
     this.releaseDestroyedStorageTiles()
     this.pheromoneSystem.update(
-      delta,
+      dt,
       now,
       this.localColony,
       this.enemyColony,
       this.resourceSystem,
       (c, r) => this.isPassable(c, r)
     )
-    if (!this.multiplayer) {
+    if (!this.multiplayer && !this.betaSandbox) {
       this.aiPheromoneSystem.update(
-        delta,
+        dt,
         now,
         this.enemyColony,
         this.localColony,
@@ -1295,11 +1317,11 @@ export class GameScene extends Phaser.Scene {
         (c, r) => this.isPassable(c, r)
       )
     }
-    this.updateCorpseHandling()
+    if (!this.betaSandbox) this.updateCorpseHandling()
     this.updateFrontLineAndAlerts(now)
     this.resourceSystem.update(
       now,
-      delta,
+      dt,
       (c, r) => this.getTile(c, r),
       [...this.playerColony.buildings, ...this.aiColony.buildings],
       this.localColony,
@@ -1321,7 +1343,7 @@ export class GameScene extends Phaser.Scene {
     this.syncWorkerSprites(now)
     this.syncWarriorSprites()
 
-    if (this.enemyColony.isDefeated()) {
+    if (!this.betaSandbox && this.enemyColony.isDefeated()) {
       // Immediate player victory when enemy throne is down.
       this.scene.pause('UIScene')
       this.add.text(this.cameras.main.midPoint.x, this.cameras.main.midPoint.y, 'Victoire !', {
@@ -1583,12 +1605,21 @@ export class GameScene extends Phaser.Scene {
     if (!this.fogGfxDirty) return
     this.fogGfx.clear()
     for (let row = 0; row < MAP_HEIGHT; row++) {
-      for (let col = 0; col < MAP_WIDTH; col++) {
-        if (this.isTileVisible(col, row)) continue
-        const alpha = this.isTileExplored(col, row) ? 0.5 : 1
-        this.fogGfx.fillStyle(0x000000, alpha)
-        this.fogGfx.fillRect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+      let runStart = -1
+      let runAlpha = 0
+      const flush = (endCol: number) => {
+        if (runStart < 0) return
+        this.fogGfx.fillStyle(0x000000, runAlpha)
+        this.fogGfx.fillRect(runStart * TILE_SIZE, row * TILE_SIZE, (endCol - runStart) * TILE_SIZE, TILE_SIZE)
+        runStart = -1
       }
+      for (let col = 0; col < MAP_WIDTH; col++) {
+        if (this.isTileVisible(col, row)) { flush(col); continue }
+        const alpha = this.isTileExplored(col, row) ? 0.5 : 1
+        if (runStart >= 0 && alpha !== runAlpha) flush(col)
+        if (runStart < 0) { runStart = col; runAlpha = alpha }
+      }
+      flush(MAP_WIDTH)
     }
     this.fogGfxDirty = false
   }

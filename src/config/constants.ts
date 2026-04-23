@@ -10,6 +10,12 @@ export const ANT_WARRIOR_SPEED = 90
 // Colony limits
 export const MAX_ANTS = 200
 
+// Mode BETA (solo test) — caps et stock initial côté joueur
+export const BETA_SANDBOX_MAX_FOOD = 12000
+export const BETA_SANDBOX_MAX_WOOD = 4000
+export const BETA_SANDBOX_START_FOOD = 6000
+export const BETA_SANDBOX_START_WOOD = 1500
+
 // Construction
 export const TUNNEL_BUILD_TIME_BASE = 3000  // ms per tile, divided by active worker count
 

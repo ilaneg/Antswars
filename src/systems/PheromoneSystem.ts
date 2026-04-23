@@ -177,7 +177,7 @@ export class PheromoneSystem {
       ant.pheromoneGoalRow = p.row
       this.assignedCounts.set(p.id, (this.assignedCounts.get(p.id) ?? 0) + 1)
 
-      if (sameTarget && ant.path.length > 0) continue
+      if (sameTarget && ant.hasPath) continue
       if (sameTarget && ant.col === p.col && ant.row === p.row) continue
 
       const path = AntEntity.aStar({ col: ant.col, row: ant.row }, { col: p.col, row: p.row }, passable)

@@ -16,6 +16,8 @@ export class Colony {
   resources = { food: 0, wood: 0 }
   private storageFullWarnUntil = 0
   private nextStorageFullWarnAt = 0
+  /** Si défini (mode BETA), remplace les plafonds nourriture / bois calculés par les entrepôts. */
+  private sandboxResourceCaps: { food: number; wood: number } | null = null
 
   workerRatio = 0.8
 
@@ -32,8 +34,17 @@ export class Colony {
   get totalAnts():    number { return this.ants.length }
 
   get storageCount(): number { return this.buildings.filter(b => b.type === 'STORAGE' && b.isAlive()).length }
-  get maxFood(): number { return 100 + (this.storageCount * 500) }
-  get maxWood(): number { return 20 + (this.storageCount * 100) }
+  get maxFood(): number {
+    return this.sandboxResourceCaps?.food ?? (100 + (this.storageCount * 500))
+  }
+  get maxWood(): number {
+    return this.sandboxResourceCaps?.wood ?? (20 + (this.storageCount * 100))
+  }
+
+  /** Plafonds fixes pour tester (beaucoup de ressources sans construire d’entrepôts). */
+  enableSandboxResourceCaps(maxFood: number, maxWood: number): void {
+    this.sandboxResourceCaps = { food: maxFood, wood: maxWood }
+  }
 
   // ─── Spawning ──────────────────────────────────────────────────────────────
 

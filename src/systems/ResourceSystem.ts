@@ -43,8 +43,8 @@ export class ResourceSystem {
   update(
     now: number,
     delta: number,
-    tileAt: TileGetter,
-    allBuildings: Building[],
+    _tileAt: TileGetter,
+    _allBuildings: Building[],
     colony: Colony,
     passable: Passable,
     autoCollect = true
@@ -104,7 +104,7 @@ export class ResourceSystem {
     }
   }
 
-  private handleWorkerProgress(resource: Resource, colony: Colony, passable: Passable, delta: number, now: number): void {
+  private handleWorkerProgress(resource: Resource, colony: Colony, passable: Passable, _delta: number, now: number): void {
     if (!resource.isNeutralized) return
     const workers = colony.ants.filter(a => a.resourceAssignmentId === resource.id && a.state !== AntState.DEAD)
     if (workers.length === 0) return
@@ -119,37 +119,31 @@ export class ResourceSystem {
     }
     if (onSite <= 0) return
 
-    const ticks = Math.max(1, Math.round(delta / 16))
-    for (let i = 0; i < ticks; i++) {
-      const haul = resource.harvest(onSite)
-      if (haul.food <= 0 && haul.materials <= 0) break
-      const center = this.getNearestDropoff(colony)
-      for (const worker of workers) {
-        if (center) {
+    const haul = resource.harvest(onSite)
+    const center = this.getNearestDropoff(colony)
+    if (haul.food > 0 || haul.materials > 0) {
+      colony.addResources(haul.food, haul.materials, now)
+      if (center) {
+        for (const worker of workers) {
           worker.carryingResource = true
           worker.navigateTo({ col: center.tileX + 1, row: center.tileY + 1 }, passable)
         }
       }
-      colony.addResources(haul.food, haul.materials, now)
     }
 
-    const center = this.getNearestDropoff(colony)
     if (center) {
+      const dropCol = center.tileX + 1
+      const dropRow = center.tileY + 1
       for (const worker of workers) {
-        if (!worker.carryingResource) continue
-        const dropCol = center.tileX + 1
-        const dropRow = center.tileY + 1
-        if (worker.col === dropCol && worker.row === dropRow) worker.carryingResource = false
+        if (worker.carryingResource && worker.col === dropCol && worker.row === dropRow)
+          worker.carryingResource = false
       }
     }
 
     if (resource.isDepleted()) {
-      for (const worker of workers) {
-        worker.resourceAssignmentId = null
-        worker.carryingResource = false
-      }
-      for (const warrior of colony.ants.filter(a => a.combatAssignmentId === resource.id)) {
-        warrior.combatAssignmentId = null
+      for (const ant of colony.ants) {
+        if (ant.resourceAssignmentId === resource.id) { ant.resourceAssignmentId = null; ant.carryingResource = false }
+        if (ant.combatAssignmentId === resource.id) ant.combatAssignmentId = null
       }
     }
   }
@@ -223,7 +217,7 @@ export class ResourceSystem {
     return null
   }
 
-  private isTileValid(col: number, row: number, size: 1 | 2, tileAt: TileGetter, allBuildings: Building[]): boolean {
+  private isTileValid(col: number, row: number, size: 1 | 2, tileAt: TileGetter, _allBuildings: Building[]): boolean {
     for (let i = 0; i < size; i++) {
       const c = col + i
       if (c < 0 || c >= MAP_WIDTH || row < 0 || row >= MAP_HEIGHT) return false

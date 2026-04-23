@@ -96,8 +96,16 @@ export class Ant {
     }
   }
 
-  /** Navigate to a tile immediately (used by TunnelSystem / external callers). */
+  /** Navigate to a tile (used by TunnelSystem / external callers). Skips A* if the current path already ends at the same goal. */
   navigateTo(goal: TilePos, passable: Passable): void {
+    if (this.col === goal.col && this.row === goal.row) {
+      this.path = []
+      return
+    }
+    if (this.path.length > 0) {
+      const end = this.path[this.path.length - 1]
+      if (end.col === goal.col && end.row === goal.row) return
+    }
     this.path = Ant.aStar({ col: this.col, row: this.row }, goal, passable)
   }
 
@@ -105,8 +113,10 @@ export class Ant {
     this.behaviorTimer = ms
   }
 
-  clearPath(): void {
-    this.path = []
+  clearPath(): void { this.path = [] }
+  get hasPath(): boolean { return this.path.length > 0 }
+  hasPathTile(col: number, row: number): boolean {
+    return this.path.some(p => p.col === col && p.row === row)
   }
 
   setNetworkTarget(x: number, y: number): void {
@@ -279,7 +289,11 @@ export class Ant {
   ): TilePos[] {
     const path: TilePos[] = []
     let k: number | undefined = goalKey
-    while (k !== undefined && k !== startKey) { path.unshift(tileOf.get(k)!); k = parentOf.get(k) }
+    let guard = 0
+    while (k !== undefined && k !== startKey && guard++ < MAP_WIDTH * MAP_HEIGHT + 4) {
+      path.unshift(tileOf.get(k)!)
+      k = parentOf.get(k)
+    }
     return path
   }
 }

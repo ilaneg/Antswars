@@ -27,6 +27,30 @@ export class MenuScene extends Phaser.Scene {
 
     const hostBtn = this.createImageButton(cx, cy - 20, 'btn-host')
     const joinBtn = this.createImageButton(cx, cy + 230, 'btn-join-clean')
+
+    const startBetaSolo = () => {
+      netplay.reset()
+      hostBtn.disableInteractive()
+      joinBtn.disableInteractive()
+      betaBtn.disableInteractive()
+      this.scene.start('GameScene', {
+        role: 'host',
+        seed: (Date.now() ^ (Math.floor(Math.random() * 0x7fffffff))) >>> 0,
+        multiplayer: false,
+        betaSandbox: true,
+      })
+    }
+
+    const betaBtn = this.add.text(16, CANVAS_HEIGHT - 92, ' BETA — Solo test ', {
+      fontSize: '13px',
+      color: '#1a1208',
+      fontFamily: 'monospace',
+      backgroundColor: '#e8b84a',
+      padding: { x: 10, y: 6 },
+    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
+    betaBtn.on('pointerover', () => betaBtn.setBackgroundColor('#f5d060'))
+    betaBtn.on('pointerout', () => betaBtn.setBackgroundColor('#e8b84a'))
+    betaBtn.on('pointerup', startBetaSolo)
     this.statusText = this.add.text(cx, cy + 330, '', {
       fontSize: '18px',
       color: '#fff5cc',
@@ -39,6 +63,7 @@ export class MenuScene extends Phaser.Scene {
     hostBtn.on('pointerup', async () => {
       hostBtn.disableInteractive()
       joinBtn.disableInteractive()
+      betaBtn.disableInteractive()
       try {
         const { code } = await netplay.hostGame()
         this.statusText.setText(`Code: ${code}\nEn attente du joueur...`)
@@ -50,6 +75,7 @@ export class MenuScene extends Phaser.Scene {
         this.statusText.setText('Impossible de créer la partie.')
         hostBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
         joinBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+        betaBtn.setInteractive({ useHandCursor: true })
       }
     })
 
@@ -58,6 +84,7 @@ export class MenuScene extends Phaser.Scene {
       if (!code?.trim()) return
       hostBtn.disableInteractive()
       joinBtn.disableInteractive()
+      betaBtn.disableInteractive()
       this.statusText.setText('Connexion en cours...')
       try {
         await netplay.joinGame(code.trim())
@@ -67,6 +94,7 @@ export class MenuScene extends Phaser.Scene {
         this.statusText.setText('Connexion impossible. Vérifie le code.')
         hostBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
         joinBtn.setInteractive({ useHandCursor: true, pixelPerfect: true, alphaTolerance: 10 })
+        betaBtn.setInteractive({ useHandCursor: true })
       }
     })
 
@@ -75,6 +103,8 @@ export class MenuScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-NUMPAD_ONE', () => hostBtn.emit('pointerup'))
     this.input.keyboard?.on('keydown-TWO', () => joinBtn.emit('pointerup'))
     this.input.keyboard?.on('keydown-NUMPAD_TWO', () => joinBtn.emit('pointerup'))
+    this.input.keyboard?.on('keydown-THREE', startBetaSolo)
+    this.input.keyboard?.on('keydown-NUMPAD_THREE', startBetaSolo)
 
     this.add.text(cx, CANVAS_HEIGHT - 30, 'v0.1 — projet personnel', {
       fontSize: '12px',
@@ -83,7 +113,7 @@ export class MenuScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setOrigin(0.5)
 
-    this.add.text(cx, CANVAS_HEIGHT - 52, '1: Créer une partie   2: Rejoindre une partie', {
+    this.add.text(cx, CANVAS_HEIGHT - 52, '1: Créer   2: Rejoindre   3: BETA solo (ressources ↑, pas d’ennemi)', {
       fontSize: '12px',
       color: '#f2dcc3',
       stroke: '#4b2a18',

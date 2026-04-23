@@ -41,7 +41,7 @@ export class Building {
     this.hp = Math.max(0, this.hp - amount)
   }
 
-  update(delta: number, _consumeFood: (amount: number) => boolean): BuildingEffect {
+  update(_delta: number, _consumeFood: (amount: number) => boolean): BuildingEffect {
     if (!this.isAlive()) return {}
     return {}
   }
