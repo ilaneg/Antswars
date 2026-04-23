@@ -43,6 +43,7 @@ class NetplayManager {
   private conn: DataConnection | null = null
   private heartbeatTimer: number | null = null
   private readyResolver: (() => void) | null = null
+  private readyRejecter: ((error: Error) => void) | null = null
 
   onReady: (() => void) | null = null
   onAction: ((action: NetAction) => void) | null = null
@@ -60,6 +61,7 @@ class NetplayManager {
     this.mapSeed = 0
     this.role = null
     this.readyResolver = null
+    this.readyRejecter = null
   }
 
   async hostGame(): Promise<{ code: string }> {
@@ -83,7 +85,6 @@ class NetplayManager {
       this.conn = connRaw as DataConnection
       this.bindConnection()
       this.mapSeed = Math.floor(Math.random() * 1_000_000_000)
-      this.sendRaw({ type: 'seed', seed: this.mapSeed })
       this.connected = true
       this.lastMessageAt = Date.now()
       this.onReady?.()
@@ -111,7 +112,17 @@ class NetplayManager {
       this.peer!.on('error', () => reject(new Error('Erreur PeerJS')))
     })
 
-    await new Promise<void>((resolve) => { this.readyResolver = resolve })
+    await new Promise<void>((resolve, reject) => {
+      this.readyResolver = resolve
+      this.readyRejecter = reject
+      window.setTimeout(() => {
+        if (this.readyResolver) {
+          this.readyResolver = null
+          this.readyRejecter = null
+          reject(new Error('Timeout réception seed'))
+        }
+      }, 15000)
+    })
   }
 
   sendAction(action: NetAction): void {
@@ -127,6 +138,10 @@ class NetplayManager {
     this.conn.on('open', () => {
       this.connected = true
       this.lastMessageAt = Date.now()
+      // Send seed only after data channel is truly open.
+      if (this.role === 'host' && this.mapSeed !== 0) {
+        this.sendRaw({ type: 'seed', seed: this.mapSeed })
+      }
       this.startHeartbeat()
     })
     this.conn.on('data', (payload: unknown) => {
@@ -138,16 +153,23 @@ class NetplayManager {
         this.onReady?.()
         this.readyResolver?.()
         this.readyResolver = null
+        this.readyRejecter = null
       } else if (msg.type === 'action') {
         this.onAction?.(msg.action)
       }
     })
     this.conn.on('close', () => {
       this.connected = false
+      this.readyRejecter?.(new Error('Connexion fermée'))
+      this.readyResolver = null
+      this.readyRejecter = null
       this.onDisconnected?.()
     })
     this.conn.on('error', () => {
       this.connected = false
+      this.readyRejecter?.(new Error('Erreur connexion'))
+      this.readyResolver = null
+      this.readyRejecter = null
       this.onDisconnected?.()
     })
   }

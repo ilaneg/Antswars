@@ -59,6 +59,8 @@ export class GameScene extends Phaser.Scene {
   private pheroGfx!: Phaser.GameObjects.Graphics
   private pheroTextGroup: Phaser.GameObjects.Text[] = []
   private buildingLabels: Phaser.GameObjects.Text[] = []
+  private workerSprites = new Map<string, Phaser.GameObjects.Sprite>()
+  private warriorSprites = new Map<string, Phaser.GameObjects.Sprite>()
   private dirtVariantStart = TILE_COLORS.length
   private rockVariantStart = TILE_COLORS.length + DIRT_VARIANT_COUNT
 
@@ -106,6 +108,10 @@ export class GameScene extends Phaser.Scene {
   preload(): void {
     this.load.image('dirt-texture', '/dirt-texture.png')
     this.load.image('rock-texture', '/rock-texture.png')
+    this.load.image('worker-ant-1', '/worker-ant-1.png')
+    this.load.image('worker-ant-2', '/worker-ant-2.png')
+    this.load.image('warrior-ant-1', '/warrior-ant-1.png')
+    this.load.image('warrior-ant-2', '/warrior-ant-2.png')
   }
 
   private buildTilesetTexture(): void {
@@ -162,6 +168,8 @@ export class GameScene extends Phaser.Scene {
   // ─── Scene setup ───────────────────────────────────────────────────────────
 
   create(): void {
+    this.ensureWorkerAnimation()
+    this.ensureWarriorAnimation()
     this.buildTilesetTexture()
     this.mapData = this.generateMap()
     this.buildTilemap()
@@ -201,7 +209,89 @@ export class GameScene extends Phaser.Scene {
       this.aiPheromoneSystem.addPoint('FOOD', this.aiColony.baseCol + 8, this.aiColony.baseDepth + 8)
       this.aiPheromoneSystem.addPoint('ATTACK', this.playerColony.baseCol + 6, this.playerColony.baseDepth + 6)
     }
+    this.events.once('shutdown', () => {
+      for (const sprite of this.workerSprites.values()) sprite.destroy()
+      for (const sprite of this.warriorSprites.values()) sprite.destroy()
+      this.workerSprites.clear()
+      this.warriorSprites.clear()
+    })
     this.scene.launch('UIScene')
+  }
+
+  private ensureWorkerAnimation(): void {
+    if (this.anims.exists('worker-ant-walk')) return
+    this.anims.create({
+      key: 'worker-ant-walk',
+      frames: [{ key: 'worker-ant-1' }, { key: 'worker-ant-2' }],
+      frameRate: 6,
+      repeat: -1,
+    })
+  }
+
+  private ensureWarriorAnimation(): void {
+    if (this.anims.exists('warrior-ant-walk')) return
+    this.anims.create({
+      key: 'warrior-ant-walk',
+      frames: [{ key: 'warrior-ant-1' }, { key: 'warrior-ant-2' }],
+      frameRate: 7,
+      repeat: -1,
+    })
+  }
+
+  private syncWorkerSprites(): void {
+    const workerIds = new Set<string>()
+    for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
+      if (ant.type !== AntType.WORKER) continue
+      workerIds.add(ant.id)
+      let sprite = this.workerSprites.get(ant.id)
+      if (!sprite) {
+        sprite = this.add.sprite(ant.x, ant.y, 'worker-ant-1').setDepth(7.1)
+        sprite.setScale(1.25)
+        sprite.play('worker-ant-walk')
+        this.workerSprites.set(ant.id, sprite)
+      }
+      const prevX = (sprite.getData('prevX') as number | undefined) ?? ant.x
+      if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
+      sprite.setData('prevX', ant.x)
+      sprite.setPosition(ant.x, ant.y)
+      sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
+      if (ant.state === AntState.DEAD) sprite.stop()
+      else if (!sprite.anims.isPlaying) sprite.play('worker-ant-walk')
+    }
+
+    for (const [id, sprite] of this.workerSprites.entries()) {
+      if (workerIds.has(id)) continue
+      sprite.destroy()
+      this.workerSprites.delete(id)
+    }
+  }
+
+  private syncWarriorSprites(): void {
+    const warriorIds = new Set<string>()
+    for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
+      if (ant.type !== AntType.WARRIOR) continue
+      warriorIds.add(ant.id)
+      let sprite = this.warriorSprites.get(ant.id)
+      if (!sprite) {
+        sprite = this.add.sprite(ant.x, ant.y, 'warrior-ant-1').setDepth(7.1)
+        sprite.setScale(1.35)
+        sprite.play('warrior-ant-walk')
+        this.warriorSprites.set(ant.id, sprite)
+      }
+      const prevX = (sprite.getData('prevX') as number | undefined) ?? ant.x
+      if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
+      sprite.setData('prevX', ant.x)
+      sprite.setPosition(ant.x, ant.y)
+      sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
+      if (ant.state === AntState.DEAD) sprite.stop()
+      else if (!sprite.anims.isPlaying) sprite.play('warrior-ant-walk')
+    }
+
+    for (const [id, sprite] of this.warriorSprites.entries()) {
+      if (warriorIds.has(id)) continue
+      sprite.destroy()
+      this.warriorSprites.delete(id)
+    }
   }
 
   // ─── Colonies & buildings ──────────────────────────────────────────────────
@@ -959,11 +1049,7 @@ export class GameScene extends Phaser.Scene {
     this.antGfx.clear()
     for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
       const isWorker = ant.type === AntType.WORKER
-      const isPlayer = this.playerColony.ants.includes(ant)
-      const color    = ant.state === AntState.DEAD ? 0x777777 : (isWorker ? (isPlayer ? 0xcc8833 : 0x888833) : (isPlayer ? 0xcc3344 : 0x6633cc))
       const radius   = isWorker ? 5 : 7
-      this.antGfx.fillStyle(color, ant.state === AntState.DEAD ? 0.55 : 1)
-      this.antGfx.fillCircle(ant.x, ant.y, radius)
       if (ant.carryingResource) {
         this.antGfx.fillStyle(0xffdd66, 1)
         this.antGfx.fillRect(ant.x - 3, ant.y - 3, 6, 6)
@@ -1061,6 +1147,8 @@ export class GameScene extends Phaser.Scene {
     this.applyPendingRemoteActions()
     if (this.multiplayer) this.syncLocalMoves(now)
     for (const ant of this.enemyColony.ants) ant.updateNetworkInterpolation(delta)
+    this.syncWorkerSprites()
+    this.syncWarriorSprites()
 
     if (this.enemyColony.isDefeated()) {
       // Immediate player victory when enemy throne is down.

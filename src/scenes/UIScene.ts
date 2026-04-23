@@ -35,10 +35,17 @@ export class UIScene extends Phaser.Scene {
   private pheroFoodBtn!: Phaser.GameObjects.Text
   private pheroAttackBtn!: Phaser.GameObjects.Text
   private pheroRallyBtn!: Phaser.GameObjects.Text
+  private soundBtn!: Phaser.GameObjects.Text
+  private ambientSound: Phaser.Sound.BaseSound | null = null
+  private ambientMuted = false
 
   private warriorPct = 30
 
   constructor() { super({ key: 'UIScene' }) }
+
+  preload(): void {
+    this.load.audio('ambient-underground-river', '/ambient-underground-river.mp3')
+  }
 
   create(): void {
     this.cameras.main.setScroll(0, 0)
@@ -162,7 +169,56 @@ export class UIScene extends Phaser.Scene {
     this.pheroFoodBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('FOOD'))
     this.pheroAttackBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('ATTACK'))
     this.pheroRallyBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('RALLY'))
+    this.soundBtn = this.add.text(CANVAS_WIDTH - 16, 12, '', {
+      fontSize: '12px',
+      color: '#f2dcc3',
+      fontFamily: 'monospace',
+      backgroundColor: '#000000aa',
+      padding: { left: 8, right: 8, top: 5, bottom: 5 },
+    })
+      .setOrigin(1, 0)
+      .setDepth(40)
+      .setScrollFactor(0)
+      .setInteractive({ useHandCursor: true })
+    this.soundBtn.on('pointerdown', () => this.toggleAmbientMute())
+    this.soundBtn.on('pointerover', () => this.soundBtn.setColor('#fff2b3'))
+    this.soundBtn.on('pointerout', () => this.soundBtn.setColor('#f2dcc3'))
+    this.refreshSoundButton()
+    this.tryStartAmbient()
+    this.input.once('pointerdown', () => this.tryStartAmbient())
+    this.events.once('shutdown', () => {
+      this.ambientSound?.stop()
+      this.ambientSound?.destroy()
+      this.ambientSound = null
+    })
   }
+
+  private tryStartAmbient(): void {
+    if (this.ambientSound?.isPlaying) return
+    if (this.sound.locked) return
+    if (!this.ambientSound) {
+      this.ambientSound = this.sound.add('ambient-underground-river', {
+        loop: true,
+        volume: 0.22,
+      })
+    }
+    if (this.ambientMuted) return
+    if (this.ambientSound.isPaused) this.ambientSound.resume()
+    else if (!this.ambientSound.isPlaying) this.ambientSound.play()
+  }
+
+  private toggleAmbientMute(): void {
+    this.ambientMuted = !this.ambientMuted
+    this.tryStartAmbient()
+    if (this.ambientMuted) this.ambientSound?.pause()
+    else this.tryStartAmbient()
+    this.refreshSoundButton()
+  }
+
+  private refreshSoundButton(): void {
+    this.soundBtn.setText(this.ambientMuted ? 'SON: OFF' : 'SON: ON')
+  }
+
 
   private pushRatio(): void {
     const gs = this.scene.get('GameScene') as GameScene
