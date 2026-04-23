@@ -1,0 +1,209 @@
+import Phaser from 'phaser'
+import { CANVAS_WIDTH, CANVAS_HEIGHT, MAP_WIDTH, MAP_HEIGHT } from '../config/constants'
+import { ResourceType } from '../types'
+import { RESOURCE_SPECS } from '../entities/Resource'
+import type { GameScene } from './GameScene'
+
+const HUD_H     = 90
+const SLIDER_W  = 300
+const SLIDER_CX = CANVAS_WIDTH / 2
+const SLIDER_Y  = CANVAS_HEIGHT - 22
+const SLIDER_L  = SLIDER_CX - SLIDER_W / 2
+const SLIDER_R  = SLIDER_CX + SLIDER_W / 2
+const HUD_TOP   = CANVAS_HEIGHT - HUD_H
+
+const BUILDING_LABELS: Record<string, string> = {
+  EGG_CHAMBER:     'Chambre des Œufs',
+  QUEEN_THRONE:    'Trône de la Reine',
+  RESOURCE_CENTER: 'Centre de Réserves',
+  CEMETERY:        'Cimetière',
+}
+
+export class UIScene extends Phaser.Scene {
+  private thumb!:         Phaser.GameObjects.Rectangle
+  private statsText!:     Phaser.GameObjects.Text
+  private ratioText!:     Phaser.GameObjects.Text
+  private queueText!:     Phaser.GameObjects.Text
+  private clearBtn!:      Phaser.GameObjects.Text
+  private bldPanel!:      Phaser.GameObjects.Text
+  private foodText!:      Phaser.GameObjects.Text
+  private materialsText!: Phaser.GameObjects.Text
+  private minimapGfx!: Phaser.GameObjects.Graphics
+  private dangerText!: Phaser.GameObjects.Text
+
+  private warriorPct = 30
+
+  constructor() { super({ key: 'UIScene' }) }
+
+  create(): void {
+    this.cameras.main.setScroll(0, 0)
+
+    // ── Background ──────────────────────────────────────────────────────────
+    const bg = this.add.graphics()
+    bg.fillStyle(0x000000, 0.78)
+    bg.fillRect(0, HUD_TOP, CANVAS_WIDTH, HUD_H)
+    bg.lineStyle(1, 0x553300, 0.6)
+    bg.lineBetween(0, HUD_TOP, CANVAS_WIDTH, HUD_TOP)
+
+    // ── Slider track ────────────────────────────────────────────────────────
+    const track = this.add.graphics()
+    track.fillStyle(0x333333, 1)
+    track.fillRoundedRect(SLIDER_L, SLIDER_Y - 5, SLIDER_W, 10, 5)
+
+    this.add.text(SLIDER_L - 8, SLIDER_Y, '◀ Ouvrières', {
+      fontSize: '11px', color: '#88dd88', fontFamily: 'monospace',
+    }).setOrigin(1, 0.5)
+    this.add.text(SLIDER_R + 8, SLIDER_Y, 'Guerrières ▶', {
+      fontSize: '11px', color: '#dd6666', fontFamily: 'monospace',
+    }).setOrigin(0, 0.5)
+
+    const thumbX = SLIDER_L + (this.warriorPct / 100) * SLIDER_W
+    this.thumb = this.add.rectangle(thumbX, SLIDER_Y, 18, 26, 0xffcc44)
+    this.thumb.setStrokeStyle(2, 0xffffff, 0.7)
+    this.thumb.setInteractive({ useHandCursor: true })
+    this.input.setDraggable(this.thumb)
+
+    this.input.on(
+      'drag',
+      (_p: unknown, obj: Phaser.GameObjects.GameObject, dragX: number) => {
+        if (obj !== this.thumb) return
+        const cx = Phaser.Math.Clamp(dragX, SLIDER_L, SLIDER_R)
+        this.thumb.x = cx
+        this.warriorPct = ((cx - SLIDER_L) / SLIDER_W) * 100
+        this.pushRatio()
+      }
+    )
+
+    // ── Ratio label ─────────────────────────────────────────────────────────
+    this.ratioText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 8, '', {
+      fontSize: '11px', color: '#aaaaaa', fontFamily: 'monospace',
+    }).setOrigin(0.5, 0)
+
+    // ── Colony stats ────────────────────────────────────────────────────────
+    this.statsText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 24, '', {
+      fontSize: '13px', color: '#ffffff', fontFamily: 'monospace',
+    }).setOrigin(0.5, 0)
+
+    // Food display (center-bottom area, above slider)
+    this.foodText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 44, '', {
+      fontSize: '11px', color: '#ffcc44', fontFamily: 'monospace',
+    }).setOrigin(0.5, 0)
+    this.materialsText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 58, '', {
+      fontSize: '11px', color: '#bbbbbb', fontFamily: 'monospace',
+    }).setOrigin(0.5, 0)
+
+    // ── Tunnel queue (left) ──────────────────────────────────────────────────
+    this.add.text(16, HUD_TOP + 8, 'CONSTRUCTION', {
+      fontSize: '10px', color: '#f59342', fontFamily: 'monospace',
+    })
+    this.queueText = this.add.text(16, HUD_TOP + 22, 'File : 0 tuile(s)', {
+      fontSize: '12px', color: '#ffcc88', fontFamily: 'monospace',
+    })
+
+    this.clearBtn = this.add.text(16, HUD_TOP + 40, '[ Vider la file ]', {
+      fontSize: '11px', color: '#cc6622', fontFamily: 'monospace',
+    }).setInteractive({ useHandCursor: true })
+
+    this.clearBtn.on('pointerover',  () => this.clearBtn.setColor('#ff9944'))
+    this.clearBtn.on('pointerout',   () => this.clearBtn.setColor('#cc6622'))
+    this.clearBtn.on('pointerdown',  () => {
+      const gs = this.scene.get('GameScene') as GameScene
+      gs.tunnelSystem?.clearQueue(gs.playerColony)
+    })
+
+    // ── Building info panel (right) ──────────────────────────────────────────
+    this.add.text(CANVAS_WIDTH - 16, HUD_TOP + 8,
+      'Clic-gauche + glisser sur DIRT pour creuser', {
+      fontSize: '10px', color: '#665544', fontFamily: 'monospace',
+    }).setOrigin(1, 0)
+    this.add.text(CANVAS_WIDTH - 16, HUD_TOP + 22,
+      'Clic-droit ou Échap pour annuler', {
+      fontSize: '10px', color: '#665544', fontFamily: 'monospace',
+    }).setOrigin(1, 0)
+
+    this.bldPanel = this.add.text(CANVAS_WIDTH - 16, HUD_TOP + 40, '', {
+      fontSize: '11px', color: '#ccbbff', fontFamily: 'monospace', align: 'right',
+    }).setOrigin(1, 0)
+
+    this.minimapGfx = this.add.graphics().setDepth(20)
+    this.dangerText = this.add.text(CANVAS_WIDTH / 2, 24, '', {
+      fontSize: '28px',
+      color: '#ff4444',
+      fontFamily: 'monospace',
+      stroke: '#220000',
+      strokeThickness: 6,
+    }).setOrigin(0.5, 0).setDepth(30)
+  }
+
+  private pushRatio(): void {
+    const gs = this.scene.get('GameScene') as GameScene
+    gs.playerColony?.updateRatio(100 - this.warriorPct)
+  }
+
+  update(): void {
+    const gs     = this.scene.get('GameScene') as GameScene
+    const colony = gs?.playerColony
+    const ts     = gs?.tunnelSystem
+
+    if (colony) {
+      const w   = colony.workerCount
+      const wa  = colony.warriorCount
+      const tot = colony.totalAnts
+      const wPct = Math.round(100 - this.warriorPct)
+      this.statsText.setText(`Ouvrières: ${w}  |  Guerrières: ${wa}  |  Total: ${tot}`)
+      this.ratioText.setText(`Répartition naissances → ${wPct}% ouvrières / ${100 - wPct}% guerrières`)
+      this.foodText.setText(`Nourriture: ${Math.floor(colony.resources.food)}`)
+      this.materialsText.setText(`Matériaux: ${Math.floor(colony.resources.materials)}`)
+    }
+
+    if (ts) {
+      const n      = ts.queueLength
+      const active = ts.getActive()
+      const pct    = active ? `  (${Math.round(active.progress)}%)` : ''
+      this.queueText.setText(`File : ${n} tuile(s)${pct}`)
+    }
+
+    // Building panel
+    const sel = gs?.selectedBuilding
+    if (sel) {
+      const name = BUILDING_LABELS[sel.type] ?? sel.type
+      const hpBar = `${sel.hp}/${sel.maxHp} PV`
+      const extra = sel.type === 'RESOURCE_CENTER' ? '\n+3 nourriture/s' :
+                    sel.type === 'EGG_CHAMBER'      ? '\nPond des œufs' :
+                    sel.type === 'QUEEN_THRONE'      ? '\nGuerrières +20% attaque' :
+                    sel.type === 'CEMETERY'          ? '\nDécomposition future' : ''
+      this.bldPanel.setText(`${name}\n${hpBar}${extra}`)
+    } else {
+      this.bldPanel.setText('')
+    }
+
+    this.renderMinimap(gs)
+    this.dangerText.setText(gs.getDangerOverlayText())
+  }
+
+  private renderMinimap(gs: GameScene): void {
+    this.minimapGfx.clear()
+    const w = 150
+    const h = 75
+    const x = CANVAS_WIDTH - w - 12
+    const y = CANVAS_HEIGHT - h - 12
+    this.minimapGfx.fillStyle(0x000000, 0.55)
+    this.minimapGfx.fillRect(x, y, w, h)
+    this.minimapGfx.lineStyle(1, 0xffffff, 0.35)
+    this.minimapGfx.strokeRect(x, y, w, h)
+
+    const resources = gs.resourceSystem?.resources ?? []
+    for (const resource of resources) {
+      const t = resource.tiles[0]
+      const px = x + (t.col / MAP_WIDTH) * w
+      const py = y + (t.row / MAP_HEIGHT) * h
+      this.minimapGfx.fillStyle(RESOURCE_SPECS[resource.type].color, 1)
+      this.minimapGfx.fillCircle(px, py, resource.type === ResourceType.MUSHROOM ? 2.2 : 1.8)
+    }
+
+    const frontCol = gs.getFrontlineCol()
+    const fx = x + (frontCol / MAP_WIDTH) * w
+    this.minimapGfx.lineStyle(1.5, 0xff5555, 0.9)
+    this.minimapGfx.lineBetween(fx, y + 2, fx, y + h - 2)
+  }
+}

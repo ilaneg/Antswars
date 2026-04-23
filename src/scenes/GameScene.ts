@@ -1,0 +1,851 @@
+import Phaser from 'phaser'
+import {
+  MAP_WIDTH, MAP_HEIGHT, TILE_SIZE,
+  CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, CAMERA_SCROLL_SPEED,
+  TILE_COLORS, START_BASES, CANVAS_HEIGHT,
+  BUILDING_CONFIG, BASE_BUILDING_LAYOUT,
+} from '../config/constants'
+import { TileType, AntType, AntState } from '../types'
+import type { PlayerSide } from '../types'
+import { Colony } from '../entities/Colony'
+import { Building } from '../entities/Building'
+import { Ant } from '../entities/Ant'
+import { TunnelSystem } from '../systems/TunnelSystem'
+import { ResourceSystem } from '../systems/ResourceSystem'
+import { CombatSystem } from '../systems/CombatSystem'
+import { SpawnSystem } from '../systems/SpawnSystem'
+import { ResourceType } from '../types'
+
+const T = TileType
+
+// No-rock buffer around each base
+const BASE_GUARD_W = 13
+const BASE_GUARD_H = 12
+const HUD_H        = 90
+const DIRT_VARIANT_COUNT = 16
+const ROCK_VARIANT_COUNT = 12
+const FLASH_MS = 200
+
+type HitFlash = { x: number; y: number; expiresAt: number }
+type CorpseTask = { corpseId: string; workerId: string; phase: 'toCorpse' | 'toCemetery' }
+
+export class GameScene extends Phaser.Scene {
+  // ── Public (read by UIScene / future systems) ─────────────────────────────
+  mapData: number[][] = []
+  playerColony!: Colony
+  aiColony!: Colony
+  tunnelSystem!: TunnelSystem
+  resourceSystem!: ResourceSystem
+  combatSystem = new CombatSystem()
+  spawnSystem = new SpawnSystem()
+  selectedBuilding: Building | null = null
+  frontlineCol = MAP_WIDTH / 2
+  isColonyInDanger = false
+
+  // ── Private ───────────────────────────────────────────────────────────────
+  private tilemapLayer!: Phaser.Tilemaps.TilemapLayer
+  private antGfx!:       Phaser.GameObjects.Graphics
+  private drawGfx!:      Phaser.GameObjects.Graphics
+  private buildingGfx!:  Phaser.GameObjects.Graphics
+  private resourceGfx!: Phaser.GameObjects.Graphics
+  private combatGfx!: Phaser.GameObjects.Graphics
+  private buildingLabels: Phaser.GameObjects.Text[] = []
+  private dirtVariantStart = TILE_COLORS.length
+  private rockVariantStart = TILE_COLORS.length + DIRT_VARIANT_COUNT
+
+  private isDrawing = false
+  private drawPath: { col: number; row: number }[] = []
+  private dustTick  = 0
+
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
+  private keyW!: Phaser.Input.Keyboard.Key
+  private keyA!: Phaser.Input.Keyboard.Key
+  private keyS!: Phaser.Input.Keyboard.Key
+  private keyD!: Phaser.Input.Keyboard.Key
+  private hitFlashes: HitFlash[] = []
+  private corpseTasks: CorpseTask[] = []
+  private audioCtx: AudioContext | null = null
+  private lastAlertAt = 0
+
+  constructor() { super({ key: 'GameScene' }) }
+
+  init(_data: { role: 'host' | 'guest'; peerId?: string }): void {}
+
+  // ─── Assets ────────────────────────────────────────────────────────────────
+
+  preload(): void {
+    this.load.image('dirt-texture', '/dirt-texture.png')
+    this.load.image('rock-texture', '/rock-texture.png')
+  }
+
+  private buildTilesetTexture(): void {
+    const canvas = document.createElement('canvas')
+    canvas.width  = TILE_SIZE * (TILE_COLORS.length + DIRT_VARIANT_COUNT + ROCK_VARIANT_COUNT)
+    canvas.height = TILE_SIZE
+    const ctx = canvas.getContext('2d')!
+    TILE_COLORS.forEach((color, i) => {
+      ctx.fillStyle = color
+      ctx.fillRect(i * TILE_SIZE, 0, TILE_SIZE, TILE_SIZE)
+    })
+
+    // Replace DIRT tile with the provided full texture and generate variants.
+    const dirtImage = this.textures.get('dirt-texture')?.getSourceImage() as CanvasImageSource | undefined
+    if (dirtImage) {
+      const dirtX = TileType.DIRT * TILE_SIZE
+      ctx.drawImage(dirtImage, 0, 0, TILE_SIZE, TILE_SIZE, dirtX, 0, TILE_SIZE, TILE_SIZE)
+      this.applyColorGrade(ctx, dirtX, 0, TILE_SIZE, TILE_SIZE, '#8a3f1d', 0.16, '#f0a36a', 0.08)
+
+      // Build a small atlas of dirt variants to avoid identical repetition.
+      for (let i = 0; i < DIRT_VARIANT_COUNT; i++) {
+        const tx = (this.dirtVariantStart + i) * TILE_SIZE
+        ctx.save()
+        ctx.translate(tx + TILE_SIZE / 2, TILE_SIZE / 2)
+        if (i % 2 === 1) ctx.scale(-1, 1)
+        if (i % 4 >= 2) ctx.scale(1, -1)
+        ctx.drawImage(dirtImage, -TILE_SIZE / 2, -TILE_SIZE / 2, TILE_SIZE, TILE_SIZE)
+        ctx.restore()
+        this.applyColorGrade(ctx, tx, 0, TILE_SIZE, TILE_SIZE, '#8a3f1d', 0.16, '#f0a36a', 0.08)
+      }
+    }
+
+    // Replace ROCK tile with the provided full texture and generate variants.
+    const rockImage = this.textures.get('rock-texture')?.getSourceImage() as CanvasImageSource | undefined
+    if (rockImage) {
+      const rockX = TileType.ROCK * TILE_SIZE
+      ctx.drawImage(rockImage, 0, 0, TILE_SIZE, TILE_SIZE, rockX, 0, TILE_SIZE, TILE_SIZE)
+      this.applyColorGrade(ctx, rockX, 0, TILE_SIZE, TILE_SIZE, '#33404f', 0.2, '#a9b1bb', 0.06)
+      for (let i = 0; i < ROCK_VARIANT_COUNT; i++) {
+        const tx = (this.rockVariantStart + i) * TILE_SIZE
+        ctx.save()
+        ctx.translate(tx + TILE_SIZE / 2, TILE_SIZE / 2)
+        if (i % 2 === 1) ctx.scale(-1, 1)
+        if (i % 3 === 2) ctx.scale(1, -1)
+        ctx.drawImage(rockImage, -TILE_SIZE / 2, -TILE_SIZE / 2, TILE_SIZE, TILE_SIZE)
+        ctx.restore()
+        this.applyColorGrade(ctx, tx, 0, TILE_SIZE, TILE_SIZE, '#33404f', 0.2, '#a9b1bb', 0.06)
+      }
+    }
+
+    this.textures.addCanvas('tileset', canvas)
+  }
+
+  // ─── Scene setup ───────────────────────────────────────────────────────────
+
+  create(): void {
+    this.buildTilesetTexture()
+    this.mapData = this.generateMap()
+    this.buildTilemap()
+    this.buildingGfx = this.add.graphics().setDepth(5)
+    this.resourceGfx = this.add.graphics().setDepth(6)
+    this.drawGfx     = this.add.graphics().setDepth(6)
+    this.combatGfx   = this.add.graphics().setDepth(6.8)
+    this.antGfx      = this.add.graphics().setDepth(7)
+
+    this.setupCamera()
+    this.setupInput()
+    this.setupColonies()
+    this.tunnelSystem = new TunnelSystem()
+    this.resourceSystem = new ResourceSystem()
+    this.resourceSystem.init(this.time.now, (c, r) => this.getTile(c, r), [
+      ...this.playerColony.buildings,
+      ...this.aiColony.buildings,
+    ])
+    this.scene.launch('UIScene')
+  }
+
+  // ─── Colonies & buildings ──────────────────────────────────────────────────
+
+  private setupColonies(): void {
+    this.playerColony = new Colony('PLAYER1', 0)
+    this.aiColony     = new Colony('PLAYER2', 1)
+
+    for (let i = 0; i < 7; i++) this.playerColony.spawnAnt(AntType.WORKER)
+    for (let i = 0; i < 3; i++) this.playerColony.spawnAnt(AntType.WARRIOR)
+    this.playerColony.ants.forEach((ant, i) => {
+      (ant as unknown as { behaviorTimer: number }).behaviorTimer = i * 130
+    })
+
+    this.placeBuildings(this.playerColony, 0)
+    this.placeBuildings(this.aiColony, 1)
+  }
+
+  private placeBuildings(colony: Colony, baseIndex: 0 | 1): void {
+    const base = START_BASES[baseIndex]
+    const side = colony.side as PlayerSide
+
+    for (const layout of BASE_BUILDING_LAYOUT) {
+      const cfg = BUILDING_CONFIG[layout.type]
+      const building = new Building(
+        layout.type,
+        base.col + layout.dx,
+        base.depth + layout.dy,
+        cfg.width, cfg.height,
+        side,
+        cfg.hp
+      )
+      colony.addBuilding(building)
+
+      // Label centered over building footprint in world space
+      const px = (base.col + layout.dx) * TILE_SIZE + (cfg.width  * TILE_SIZE) / 2
+      const py = (base.depth + layout.dy) * TILE_SIZE + (cfg.height * TILE_SIZE) / 2
+      const label = this.add.text(px, py, cfg.label, {
+        fontSize: '8px', color: '#ffffff', fontFamily: 'monospace',
+        align: 'center', stroke: '#000000', strokeThickness: 2,
+      }).setOrigin(0.5, 0.5).setDepth(8)
+      this.buildingLabels.push(label)
+    }
+  }
+
+  // ─── Map generation ────────────────────────────────────────────────────────
+
+  private generateMap(): number[][] {
+    const grid: number[][] = Array.from({ length: MAP_HEIGHT }, (_, row) =>
+      new Array<number>(MAP_WIDTH).fill(row === 0 ? T.GRASS : T.DIRT)
+    )
+    for (let row = 2; row < MAP_HEIGHT; row++) {
+      for (let col = 0; col < MAP_WIDTH; col++) {
+        if (grid[row][col] === T.DIRT && !this.inBaseZone(col, row) && Math.random() < 0.08)
+          this.growCluster(grid, row, col)
+      }
+    }
+    for (const base of START_BASES) this.carveBase(grid, base.col, base.depth)
+    return grid
+  }
+
+  private inBaseZone(col: number, row: number): boolean {
+    return START_BASES.some(
+      b => col >= b.col - 2 && col <= b.col + BASE_GUARD_W &&
+           row >= 1 && row <= b.depth + BASE_GUARD_H
+    )
+  }
+
+  private growCluster(grid: number[][], startRow: number, startCol: number): void {
+    const target = 3 + Math.floor(Math.random() * 6)
+    const frontier: [number, number][] = [[startRow, startCol]]
+    let placed = 0
+    while (frontier.length > 0 && placed < target) {
+      const idx = Math.floor(Math.random() * frontier.length)
+      const [r, c] = frontier.splice(idx, 1)[0]
+      if (r < 2 || r >= MAP_HEIGHT || c < 0 || c >= MAP_WIDTH) continue
+      if (grid[r][c] !== T.DIRT || this.inBaseZone(c, r)) continue
+      grid[r][c] = T.ROCK; placed++
+      frontier.push([r-1,c],[r+1,c],[r,c-1],[r,c+1])
+    }
+  }
+
+  /**
+   * Layout (col = base.col, d = base.depth):
+   *   shaft:          col+3, rows 1..d
+   *   top corridor:   row d,   cols col..col+10
+   *   EGG_CHAMBER:    rows d+1..d+4, cols col..col+4   (5×4)
+   *   QUEEN_THRONE:   rows d+1..d+4, cols col+5..col+10 (6×4)
+   *   mid corridor:   row d+5, cols col..col+10
+   *   RESOURCE_CENTER:rows d+6..d+8, cols col..col+3   (4×3)
+   *   CEMETERY:       rows d+6..d+7, cols col+5..col+7  (3×2)
+   */
+  private carveBase(grid: number[][], col: number, depth: number): void {
+    const d = depth
+    const shaft = col + 3
+    for (let row = 1; row <= d; row++) this.setTunnel(grid, row, shaft)
+
+    for (let c = col; c <= col + 10; c++) this.setTunnel(grid, d, c)
+
+    for (let r = d + 1; r <= d + 4; r++)
+      for (let c = col; c <= col + 10; c++) this.setTunnel(grid, r, c)
+
+    for (let c = col; c <= col + 10; c++) this.setTunnel(grid, d + 5, c)
+
+    for (let r = d + 6; r <= d + 8; r++)
+      for (let c = col; c <= col + 3; c++) this.setTunnel(grid, r, c)
+
+    for (let r = d + 6; r <= d + 7; r++)
+      for (let c = col + 5; c <= col + 7; c++) this.setTunnel(grid, r, c)
+  }
+
+  private setTunnel(grid: number[][], row: number, col: number): void {
+    if (row >= 0 && row < MAP_HEIGHT && col >= 0 && col < MAP_WIDTH)
+      grid[row][col] = T.TUNNEL
+  }
+
+  // ─── Tilemap ───────────────────────────────────────────────────────────────
+
+  private buildTilemap(): void {
+    const map = this.make.tilemap({ data: this.mapData, tileWidth: TILE_SIZE, tileHeight: TILE_SIZE })
+    const ts  = map.addTilesetImage('tileset', 'tileset', TILE_SIZE, TILE_SIZE, 0, 0, 0)!
+    this.tilemapLayer = map.createLayer(0, ts, 0, 0)!
+
+    // Swap visual index for DIRT cells to textured variants while gameplay data stays TileType.DIRT.
+    for (let row = 0; row < MAP_HEIGHT; row++) {
+      for (let col = 0; col < MAP_WIDTH; col++) {
+        if (this.mapData[row][col] === T.DIRT) {
+          this.tilemapLayer.putTileAt(this.getDirtVisualIndex(col, row), col, row)
+          continue
+        }
+        if (this.mapData[row][col] === T.ROCK) {
+          this.tilemapLayer.putTileAt(this.getRockVisualIndex(col, row), col, row)
+        }
+      }
+    }
+  }
+
+  private completeTile(tileX: number, tileY: number): void {
+    this.mapData[tileY][tileX] = T.TUNNEL
+    this.tilemapLayer.putTileAt(T.TUNNEL, tileX, tileY)
+  }
+
+  private getDirtVisualIndex(col: number, row: number): number {
+    const hash = ((col * 73856093) ^ (row * 19349663)) >>> 0
+    return this.dirtVariantStart + (hash % DIRT_VARIANT_COUNT)
+  }
+
+  private getRockVisualIndex(col: number, row: number): number {
+    const hash = ((col * 83492791) ^ (row * 2971215073)) >>> 0
+    return this.rockVariantStart + (hash % ROCK_VARIANT_COUNT)
+  }
+
+  private applyColorGrade(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    shadowColor: string,
+    shadowAlpha: number,
+    lightColor: string,
+    lightAlpha: number
+  ): void {
+    ctx.save()
+    ctx.fillStyle = shadowColor
+    ctx.globalAlpha = shadowAlpha
+    ctx.fillRect(x, y, w, h)
+    ctx.fillStyle = lightColor
+    ctx.globalAlpha = lightAlpha
+    ctx.fillRect(x, y, w, h)
+    ctx.restore()
+  }
+
+  // ─── Camera & input ────────────────────────────────────────────────────────
+
+  private setupCamera(): void {
+    const cam = this.cameras.main
+    cam.setBounds(0, 0, MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE)
+    cam.setZoom(1.5)
+    cam.centerOn((START_BASES[0].col + 3) * TILE_SIZE, START_BASES[0].depth * TILE_SIZE)
+  }
+
+  private setupInput(): void {
+    this.cursors = this.input.keyboard!.createCursorKeys()
+    this.keyW = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W)
+    this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A)
+    this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S)
+    this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
+
+    this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+      const cam = this.cameras.main
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX))
+    })
+
+    this.input.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
+      if (!this.audioCtx) this.audioCtx = new window.AudioContext()
+      if (ptr.rightButtonDown()) {
+        this.cancelDraw()
+        const { col, row } = this.ptrToTile(ptr)
+        this.sendWarriorsTo(col, row)
+        return
+      }
+      if (!ptr.leftButtonDown()) return
+      if (ptr.y >= CANVAS_HEIGHT - HUD_H) return
+
+      const { col, row } = this.ptrToTile(ptr)
+
+      // Building selection (buildings are on TUNNEL tiles, so check first)
+      const hit = this.findBuildingAt(col, row)
+      if (hit) {
+        this.selectedBuilding = this.selectedBuilding === hit ? null : hit
+        return
+      }
+
+      if (this.getTile(col, row) !== T.DIRT) return
+      if (!this.touchesTunnel(col, row)) return
+
+      this.isDrawing = true
+      this.drawPath  = [{ col, row }]
+    })
+
+    this.input.on('pointermove', (ptr: Phaser.Input.Pointer) => {
+      if (!this.isDrawing || !ptr.isDown) return
+
+      const { col, row } = this.ptrToTile(ptr)
+      const last = this.drawPath[this.drawPath.length - 1]
+      if (col === last.col && row === last.row) return
+      if (Math.abs(col - last.col) + Math.abs(row - last.row) !== 1) return
+      if (this.getTile(col, row) !== T.DIRT) return
+      if (this.drawPath.some(t => t.col === col && t.row === row)) return
+
+      this.drawPath.push({ col, row })
+    })
+
+    this.input.on('pointerup', (ptr: Phaser.Input.Pointer) => {
+      if (ptr.leftButtonReleased() && this.isDrawing) this.confirmDraw()
+    })
+
+    this.input.keyboard!.on('keydown-ESC', () => {
+      if (this.isDrawing) this.cancelDraw()
+      else this.selectedBuilding = null
+    })
+  }
+
+  // ─── Drawing helpers ───────────────────────────────────────────────────────
+
+  private ptrToTile(ptr: Phaser.Input.Pointer): { col: number; row: number } {
+    const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y)
+    return { col: Math.floor(wp.x / TILE_SIZE), row: Math.floor(wp.y / TILE_SIZE) }
+  }
+
+  private touchesTunnel(col: number, row: number): boolean {
+    for (const [dc, dr] of [[0,-1],[0,1],[-1,0],[1,0]] as [number,number][]) {
+      const nc = col + dc; const nr = row + dr
+      if (this.getTile(nc, nr) === T.TUNNEL || this.tunnelSystem.isQueued(nc, nr)) return true
+    }
+    return false
+  }
+
+  private confirmDraw(): void {
+    if (this.drawPath.length > 0) this.tunnelSystem.addTiles(this.drawPath)
+    this.drawPath  = []
+    this.isDrawing = false
+  }
+
+  private cancelDraw(): void {
+    this.drawPath  = []
+    this.isDrawing = false
+  }
+
+  private sendWarriorsTo(col: number, row: number): void {
+    for (const ant of this.playerColony.ants) {
+      if (ant.type !== AntType.WARRIOR || ant.state === AntState.DEAD) continue
+      if (ant.combatAssignmentId) continue
+      ant.attackMoveTarget = { col, row }
+      ant.navigateTo({ col, row }, (c, r) => this.isPassable(c, r))
+      ant.setBehaviorCooldown(100)
+    }
+  }
+
+  private issueAiAttackOrders(): void {
+    const target = { col: this.playerColony.baseCol + 4, row: this.playerColony.baseDepth + 4 }
+    for (const ant of this.aiColony.ants) {
+      if (ant.type !== AntType.WARRIOR || ant.state === AntState.DEAD) continue
+      if (ant.attackMoveTarget) continue
+      ant.attackMoveTarget = target
+    }
+  }
+
+  private updateCombat(now: number): void {
+    const killedP = this.combatSystem.resolve(
+      this.playerColony.ants,
+      this.aiColony.ants,
+      this.aiColony.buildings,
+      now,
+      (x, y) => this.hitFlashes.push({ x, y, expiresAt: now + FLASH_MS })
+    )
+    const killedAI = this.combatSystem.resolve(
+      this.aiColony.ants,
+      this.playerColony.ants,
+      this.playerColony.buildings,
+      now,
+      (x, y) => this.hitFlashes.push({ x, y, expiresAt: now + FLASH_MS })
+    )
+    // Ensure dead state is visible immediately.
+    for (const ant of [...killedP, ...killedAI]) ant.state = AntState.DEAD
+  }
+
+  private updateCorpseHandling(): void {
+    this.assignCorpseWorkers(this.playerColony)
+    this.assignCorpseWorkers(this.aiColony)
+    this.advanceCorpseTasks(this.playerColony)
+    this.advanceCorpseTasks(this.aiColony)
+  }
+
+  private assignCorpseWorkers(colony: Colony): void {
+    const cemetery = colony.buildings.find(b => b.type === 'CEMETERY' && b.isAlive())
+    if (!cemetery) return
+    const deadAnts = colony.ants.filter(a => a.state === AntState.DEAD)
+    const assignedCorpseIds = new Set(this.corpseTasks.map(t => t.corpseId))
+    for (const corpse of deadAnts) {
+      if (assignedCorpseIds.has(corpse.id)) continue
+      const worker = colony.ants.find(a =>
+        a.type === AntType.WORKER &&
+        a.state !== AntState.DEAD &&
+        !a.carryingCorpseId &&
+        Math.hypot(a.x - corpse.x, a.y - corpse.y) <= TILE_SIZE * 1.5
+      )
+      if (!worker) continue
+      const drop = { col: cemetery.tileX + 1, row: cemetery.tileY + 1 }
+      const path = Ant.aStar({ col: worker.col, row: worker.row }, drop, (c, r) => this.isPassable(c, r))
+      if (path.length === 0 && (worker.col !== drop.col || worker.row !== drop.row)) continue
+      worker.carryingCorpseId = corpse.id
+      worker.navigateTo({ col: corpse.col, row: corpse.row }, (c, r) => this.isPassable(c, r))
+      this.corpseTasks.push({ corpseId: corpse.id, workerId: worker.id, phase: 'toCorpse' })
+    }
+  }
+
+  private advanceCorpseTasks(colony: Colony): void {
+    const cemetery = colony.buildings.find(b => b.type === 'CEMETERY' && b.isAlive())
+    if (!cemetery) return
+    const drop = { col: cemetery.tileX + 1, row: cemetery.tileY + 1 }
+    this.corpseTasks = this.corpseTasks.filter(task => {
+      const worker = colony.ants.find(a => a.id === task.workerId)
+      const corpse = colony.ants.find(a => a.id === task.corpseId)
+      if (!worker || !corpse) return false
+      if (worker.state === AntState.DEAD) return false
+      if (task.phase === 'toCorpse') {
+        if (Math.hypot(worker.x - corpse.x, worker.y - corpse.y) <= 10) {
+          task.phase = 'toCemetery'
+          worker.navigateTo(drop, (c, r) => this.isPassable(c, r))
+        }
+      } else {
+        corpse.x = worker.x
+        corpse.y = worker.y
+        if (worker.col === drop.col && worker.row === drop.row) {
+          worker.carryingCorpseId = null
+          colony.ants = colony.ants.filter(a => a.id !== corpse.id)
+          return false
+        }
+      }
+      return true
+    })
+  }
+
+  private renderCombatEffects(now: number): void {
+    this.combatGfx.clear()
+    this.hitFlashes = this.hitFlashes.filter(f => f.expiresAt > now)
+    for (const flash of this.hitFlashes) {
+      const t = Phaser.Math.Clamp((flash.expiresAt - now) / FLASH_MS, 0, 1)
+      this.combatGfx.fillStyle(0xff2222, 0.6 * t)
+      this.combatGfx.fillCircle(flash.x, flash.y, 8 + (1 - t) * 8)
+    }
+  }
+
+  private updateFrontLineAndAlerts(now: number): void {
+    const pWarriors = this.playerColony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
+    const aiWarriors = this.aiColony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
+    if (pWarriors.length > 0 && aiWarriors.length > 0) {
+      const pAvg = pWarriors.reduce((s, a) => s + a.col, 0) / pWarriors.length
+      const aAvg = aiWarriors.reduce((s, a) => s + a.col, 0) / aiWarriors.length
+      this.frontlineCol = (pAvg + aAvg) / 2
+    }
+
+    const nearNest = aiWarriors.filter(a => Math.abs(a.col - this.playerColony.baseCol) < 16 && Math.abs(a.row - this.playerColony.baseDepth) < 14).length
+    if (nearNest > 5 && now - this.lastAlertAt > 2500) {
+      this.playAlert()
+      this.lastAlertAt = now
+    }
+
+    const throne = this.playerColony.getQueenThrone()
+    this.isColonyInDanger = pWarriors.length === 0 && !!throne && throne.hp / throne.maxHp < 0.3
+  }
+
+  private playAlert(): void {
+    if (!this.audioCtx) return
+    const osc = this.audioCtx.createOscillator()
+    const gain = this.audioCtx.createGain()
+    osc.type = 'sawtooth'
+    osc.frequency.value = 720
+    gain.gain.value = 0.0001
+    osc.connect(gain)
+    gain.connect(this.audioCtx.destination)
+    const now = this.audioCtx.currentTime
+    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22)
+    osc.start(now)
+    osc.stop(now + 0.23)
+  }
+
+  private findBuildingAt(col: number, row: number): Building | null {
+    for (const colony of [this.playerColony, this.aiColony]) {
+      for (const b of colony.buildings) {
+        if (col >= b.tileX && col < b.tileX + b.width &&
+            row >= b.tileY && row < b.tileY + b.height) {
+          return b
+        }
+      }
+    }
+    return null
+  }
+
+  // ─── Building rendering ────────────────────────────────────────────────────
+
+  private renderBuildings(): void {
+    this.buildingGfx.clear()
+    const S = TILE_SIZE
+
+    const allBuildings = [
+      ...this.playerColony.buildings,
+      ...this.aiColony.buildings,
+    ]
+
+    for (const b of allBuildings) {
+      const cfg  = BUILDING_CONFIG[b.type]
+      const px   = b.tileX * S
+      const py   = b.tileY * S
+      const w    = b.width  * S
+      const h    = b.height * S
+      const dead = !b.isAlive()
+
+      const alpha = dead ? 0.15 : 0.45
+      this.buildingGfx.fillStyle(cfg.color, alpha)
+      this.buildingGfx.fillRect(px, py, w, h)
+
+      const isSelected = b === this.selectedBuilding
+      this.buildingGfx.lineStyle(isSelected ? 3 : 1.5, isSelected ? 0xffffff : cfg.color, isSelected ? 1 : 0.8)
+      this.buildingGfx.strokeRect(px + 1, py + 1, w - 2, h - 2)
+
+      // HP bar
+      if (!dead && b.hp < b.maxHp) {
+        const bw = w - 4
+        const bx = px + 2; const by = py + h - 4
+        this.buildingGfx.fillStyle(0x330000, 0.8)
+        this.buildingGfx.fillRect(bx, by, bw, 3)
+        this.buildingGfx.fillStyle(0x44ee44, 1)
+        this.buildingGfx.fillRect(bx, by, bw * (b.hp / b.maxHp), 3)
+      }
+    }
+  }
+
+  private renderResources(now: number): void {
+    this.resourceGfx.clear()
+    const S = TILE_SIZE
+    for (const resource of this.resourceSystem.resources) {
+      const life = Phaser.Math.Clamp((resource.expiresAt - now) / (resource.expiresAt - resource.spawnedAt), 0, 1)
+      const color = this.blendColor(resource.color, 0x444444, 1 - life)
+      for (const tile of resource.tiles) {
+        const px = tile.col * S
+        const py = tile.row * S
+        this.resourceGfx.fillStyle(color, 0.8)
+        this.resourceGfx.fillRect(px + 4, py + 4, S - 8, S - 8)
+        this.resourceGfx.lineStyle(1.5, 0x111111, 0.7)
+        this.resourceGfx.strokeRect(px + 4, py + 4, S - 8, S - 8)
+        this.drawResourceIcon(resource.type, px + S / 2, py + S / 2)
+      }
+
+      if (resource.threatLevel > 0 || resource.guardianCount > 0) {
+        const marker = resource.tiles[0]
+        this.resourceGfx.fillStyle(0xcc3333, 1)
+        this.resourceGfx.fillCircle(marker.col * S + S * 0.8, marker.row * S + S * 0.2, 4)
+      }
+    }
+  }
+
+  private drawResourceIcon(type: ResourceType, x: number, y: number): void {
+    this.resourceGfx.fillStyle(0xffffff, 0.9)
+    switch (type) {
+      case ResourceType.EARTHWORM:
+        this.resourceGfx.fillCircle(x, y, 3)
+        break
+      case ResourceType.BEETLE:
+        this.resourceGfx.fillCircle(x - 2, y, 2)
+        this.resourceGfx.fillCircle(x + 2, y, 2)
+        break
+      case ResourceType.SEED_PILE:
+        this.resourceGfx.fillTriangle(x - 4, y + 3, x + 4, y + 3, x, y - 4)
+        break
+      case ResourceType.DEAD_INSECT:
+        this.resourceGfx.fillRect(x - 4, y - 1, 8, 2)
+        break
+      case ResourceType.MUSHROOM:
+        this.resourceGfx.fillCircle(x, y - 2, 4)
+        this.resourceGfx.fillRect(x - 1, y + 2, 2, 3)
+        break
+      case ResourceType.PEBBLE_CACHE:
+        this.resourceGfx.fillCircle(x - 2, y, 2.5)
+        this.resourceGfx.fillCircle(x + 2, y - 1, 2)
+        break
+    }
+  }
+
+  private blendColor(from: number, to: number, t: number): number {
+    const ratio = Phaser.Math.Clamp(t, 0, 1)
+    const fr = (from >> 16) & 0xff
+    const fg = (from >> 8) & 0xff
+    const fb = from & 0xff
+    const tr = (to >> 16) & 0xff
+    const tg = (to >> 8) & 0xff
+    const tb = to & 0xff
+    const r = Math.round(fr + (tr - fr) * ratio)
+    const g = Math.round(fg + (tg - fg) * ratio)
+    const b = Math.round(fb + (tb - fb) * ratio)
+    return (r << 16) | (g << 8) | b
+  }
+
+  // ─── Visual feedback ───────────────────────────────────────────────────────
+
+  private updateDrawFeedback(): void {
+    this.drawGfx.clear()
+    this.dustTick++
+
+    const S = TILE_SIZE
+
+    for (const t of this.drawPath) {
+      const px = t.col * S; const py = t.row * S
+      this.drawGfx.fillStyle(0xf5c842, 0.45)
+      this.drawGfx.fillRect(px, py, S, S)
+      this.drawGfx.lineStyle(2, 0xf5c842, 1)
+      this.drawGfx.strokeRect(px + 1, py + 1, S - 2, S - 2)
+    }
+
+    for (const task of this.tunnelSystem.getQueue()) {
+      const px = task.tileX * S; const py = task.tileY * S
+      this.drawGfx.fillStyle(0xf59342, 0.25)
+      this.drawGfx.fillRect(px, py, S, S)
+      this.strokeDashed(px, py, S, S, 0xf59342)
+    }
+
+    const active = this.tunnelSystem.getActive()
+    if (active) {
+      const px = active.tileX * S; const py = active.tileY * S
+      const pulse = 0.3 + 0.2 * Math.sin(this.dustTick * 0.15)
+      this.drawGfx.fillStyle(0xf59342, pulse)
+      this.drawGfx.fillRect(px, py, S, S)
+
+      const barW = S - 4; const barH = 4
+      const bx = px + 2;  const by = py + S - barH - 2
+      this.drawGfx.fillStyle(0x111111, 0.8)
+      this.drawGfx.fillRect(bx, by, barW, barH)
+      this.drawGfx.fillStyle(0x44ee44, 1)
+      this.drawGfx.fillRect(bx, by, barW * active.progress / 100, barH)
+
+      if (this.dustTick % 3 === 0) {
+        for (let i = 0; i < 3; i++) {
+          const rx = px + Math.random() * S
+          const ry = py + Math.random() * S
+          this.drawGfx.fillStyle(0xd4a054, 0.3 + Math.random() * 0.5)
+          this.drawGfx.fillCircle(rx, ry, 1 + Math.random() * 2)
+        }
+      }
+    }
+  }
+
+  private strokeDashed(x: number, y: number, w: number, h: number, color: number): void {
+    const DASH = 5; const GAP = 3
+    this.drawGfx.lineStyle(1.5, color, 0.85)
+    const seg = (x1: number, y1: number, dx: number, dy: number, len: number) => {
+      let p = 0
+      while (p < len) {
+        const e = Math.min(p + DASH, len)
+        this.drawGfx.lineBetween(x1 + dx * p, y1 + dy * p, x1 + dx * e, y1 + dy * e)
+        p += DASH + GAP
+      }
+    }
+    seg(x,     y,     1,  0, w)
+    seg(x + w, y,     0,  1, h)
+    seg(x + w, y + h, -1, 0, w)
+    seg(x,     y + h, 0, -1, h)
+  }
+
+  // ─── Ant rendering ─────────────────────────────────────────────────────────
+
+  private renderAnts(): void {
+    this.antGfx.clear()
+    for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
+      const isWorker = ant.type === AntType.WORKER
+      const isPlayer = this.playerColony.ants.includes(ant)
+      const color    = ant.state === AntState.DEAD ? 0x777777 : (isWorker ? (isPlayer ? 0xcc8833 : 0x888833) : (isPlayer ? 0xcc3344 : 0x6633cc))
+      const radius   = isWorker ? 5 : 7
+      this.antGfx.fillStyle(color, ant.state === AntState.DEAD ? 0.55 : 1)
+      this.antGfx.fillCircle(ant.x, ant.y, radius)
+      if (ant.carryingResource) {
+        this.antGfx.fillStyle(0xffdd66, 1)
+        this.antGfx.fillRect(ant.x - 3, ant.y - 3, 6, 6)
+      }
+
+      if (ant.hp < ant.maxHp && ant.state !== AntState.DEAD) {
+        const bw = 14; const bh = 2
+        const bx = ant.x - bw / 2; const by = ant.y - radius - 5
+        this.antGfx.fillStyle(0x330000, 1); this.antGfx.fillRect(bx, by, bw, bh)
+        this.antGfx.fillStyle(0x00cc44, 1); this.antGfx.fillRect(bx, by, bw * (ant.hp / ant.maxHp), bh)
+      }
+
+      if (ant.state === AntState.WORKING) {
+        this.antGfx.fillStyle(0xffffff, 0.9)
+        this.antGfx.fillCircle(ant.x, ant.y - radius - 3, 2.5)
+      }
+    }
+  }
+
+  // ─── Game loop ─────────────────────────────────────────────────────────────
+
+  update(_time: number, delta: number): void {
+    const now = this.time.now
+    const cam   = this.cameras.main
+    const speed = CAMERA_SCROLL_SPEED * (delta / 1000) / cam.zoom
+    if (this.cursors.left.isDown  || this.keyA.isDown) cam.scrollX -= speed
+    if (this.cursors.right.isDown || this.keyD.isDown) cam.scrollX += speed
+    if (this.cursors.up.isDown    || this.keyW.isDown) cam.scrollY -= speed
+    if (this.cursors.down.isDown  || this.keyS.isDown) cam.scrollY += speed
+
+    this.tunnelSystem.update(
+      delta,
+      this.playerColony,
+      (c, r) => this.isPassable(c, r),
+      (x, y) => this.completeTile(x, y)
+    )
+
+    this.playerColony.update(delta, (c, r) => this.isPassable(c, r))
+    this.issueAiAttackOrders()
+    this.aiColony.update(delta, (c, r) => this.isPassable(c, r))
+    this.spawnSystem.update(this.playerColony, now)
+    this.spawnSystem.update(this.aiColony, now)
+    this.updateCombat(now)
+    this.updateCorpseHandling()
+    this.updateFrontLineAndAlerts(now)
+    this.resourceSystem.update(
+      now,
+      delta,
+      (c, r) => this.getTile(c, r),
+      [...this.playerColony.buildings, ...this.aiColony.buildings],
+      this.playerColony,
+      (c, r) => this.isPassable(c, r)
+    )
+
+    if (this.aiColony.isDefeated()) {
+      // Immediate player victory when enemy throne is down.
+      this.scene.pause('UIScene')
+      this.add.text(this.cameras.main.midPoint.x, this.cameras.main.midPoint.y, 'Victoire !', {
+        fontSize: '48px', color: '#ffee66', fontFamily: 'monospace', stroke: '#000', strokeThickness: 6,
+      }).setOrigin(0.5).setDepth(50).setScrollFactor(0)
+      this.scene.pause()
+    }
+
+    this.renderBuildings()
+    this.renderResources(now)
+    this.renderCombatEffects(now)
+    this.updateDrawFeedback()
+    this.renderAnts()
+  }
+
+  // ─── Public helpers ────────────────────────────────────────────────────────
+
+  getFrontlineCol(): number {
+    return this.frontlineCol
+  }
+
+  getDangerOverlayText(): string {
+    return this.isColonyInDanger ? 'Votre colonie est en danger !' : ''
+  }
+
+  getTile(col: number, row: number): number {
+    if (row < 0 || row >= MAP_HEIGHT || col < 0 || col >= MAP_WIDTH) return -1
+    return this.mapData[row][col]
+  }
+
+  digTile(col: number, row: number): boolean {
+    if (this.getTile(col, row) !== T.DIRT) return false
+    this.completeTile(col, row)
+    return true
+  }
+
+  isPassable(col: number, row: number): boolean {
+    const t = this.getTile(col, row)
+    return t === T.TUNNEL || t === T.GRASS
+  }
+}
