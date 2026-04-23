@@ -41,7 +41,7 @@ export const ROCK_HP = 500
 
 // Spawn
 export const EGG_SPAWN_INTERVAL = 8000 // ms per ant from egg chamber
-export const SPAWN_FOOD_DRAIN = 10      // food per spawned ant
+export const SPAWN_FOOD_DRAIN = 50      // food per spawned ant
 
 // Camera
 export const CAMERA_SCROLL_SPEED = 400
@@ -57,7 +57,7 @@ export const CANVAS_HEIGHT = 720
 export const BG_COLOR = '#1a0f00'
 
 // Tile colors (flat, no texture)
-export const TILE_COLORS = ['#4a7c3f', '#6b3a1f', '#3d3d3d', '#2a1505', '#1a0f00'] // indexed by TileType value
+export const TILE_COLORS = ['#4a7c3f', '#6b3a1f', '#3d3d3d', '#2a1505', '#1a0f00', '#2f1d0d'] // indexed by TileType value
 
 // Starting base positions [col, depth] for each player
 export const START_BASES = [
@@ -73,6 +73,7 @@ export const BUILDING_CONFIG: Record<string, {
   QUEEN_THRONE:    { width: 6, height: 4, hp: 500, color: 0x6a2a8c, label: 'Trône de\nla Reine' },
   RESOURCE_CENTER: { width: 4, height: 3, hp: 150, color: 0x8c5a1a, label: 'Réserves' },
   CEMETERY:        { width: 3, height: 2, hp: 100, color: 0x2a2a3a, label: 'Cimetière' },
+  STORAGE:         { width: 3, height: 3, hp: 150, color: 0x5c3317, label: 'Entrepôt\n📦' },
 }
 
 // Layout of buildings relative to base (col + dx, depth + dy)

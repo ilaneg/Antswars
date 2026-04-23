@@ -17,6 +17,7 @@ const BUILDING_LABELS: Record<string, string> = {
   QUEEN_THRONE:    'Trône de la Reine',
   RESOURCE_CENTER: 'Centre de Réserves',
   CEMETERY:        'Cimetière',
+  STORAGE:         'Entrepôt',
 }
 
 export class UIScene extends Phaser.Scene {
@@ -27,14 +28,24 @@ export class UIScene extends Phaser.Scene {
   private clearBtn!:      Phaser.GameObjects.Text
   private bldPanel!:      Phaser.GameObjects.Text
   private foodText!:      Phaser.GameObjects.Text
-  private materialsText!: Phaser.GameObjects.Text
+  private woodText!: Phaser.GameObjects.Text
   private minimapGfx!: Phaser.GameObjects.Graphics
   private dangerText!: Phaser.GameObjects.Text
   private lagText!: Phaser.GameObjects.Text
+  private spawnWarnText!: Phaser.GameObjects.Text
+  private storageWarnText!: Phaser.GameObjects.Text
   private pheroPanel!: Phaser.GameObjects.Text
   private pheroFoodBtn!: Phaser.GameObjects.Text
   private pheroAttackBtn!: Phaser.GameObjects.Text
   private pheroRallyBtn!: Phaser.GameObjects.Text
+  private buildBtn!: Phaser.GameObjects.Text
+  private buildPanel!: Phaser.GameObjects.Text
+  private storageBuildBtn!: Phaser.GameObjects.Text
+  private buildTooltip!: Phaser.GameObjects.Text
+  private diggersBtn!: Phaser.GameObjects.Text
+  private diggersPanel!: Phaser.GameObjects.Text
+  private diggersMinusBtn!: Phaser.GameObjects.Text
+  private diggersPlusBtn!: Phaser.GameObjects.Text
   private soundBtn!: Phaser.GameObjects.Text
   private ambientSound: Phaser.Sound.BaseSound | null = null
   private ambientMuted = false
@@ -100,7 +111,7 @@ export class UIScene extends Phaser.Scene {
     this.foodText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 44, '', {
       fontSize: '11px', color: '#ffcc44', fontFamily: 'monospace',
     }).setOrigin(0.5, 0)
-    this.materialsText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 58, '', {
+    this.woodText = this.add.text(CANVAS_WIDTH / 2, HUD_TOP + 58, '', {
       fontSize: '11px', color: '#bbbbbb', fontFamily: 'monospace',
     }).setOrigin(0.5, 0)
 
@@ -152,6 +163,20 @@ export class UIScene extends Phaser.Scene {
       stroke: '#221100',
       strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(30)
+    this.spawnWarnText = this.add.text(CANVAS_WIDTH / 2, 84, '', {
+      fontSize: '20px',
+      color: '#ff3333',
+      fontFamily: 'monospace',
+      stroke: '#220000',
+      strokeThickness: 4,
+    }).setOrigin(0.5, 0).setDepth(30)
+    this.storageWarnText = this.add.text(CANVAS_WIDTH / 2, 110, '', {
+      fontSize: '18px',
+      color: '#ff9933',
+      fontFamily: 'monospace',
+      stroke: '#221100',
+      strokeThickness: 4,
+    }).setOrigin(0.5, 0).setDepth(30)
 
     this.pheroPanel = this.add.text(12, CANVAS_HEIGHT - 170, '', {
       fontSize: '13px', color: '#f2f2f2', fontFamily: 'monospace',
@@ -169,6 +194,35 @@ export class UIScene extends Phaser.Scene {
     this.pheroFoodBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('FOOD'))
     this.pheroAttackBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('ATTACK'))
     this.pheroRallyBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('RALLY'))
+    this.buildBtn = this.add.text(CANVAS_WIDTH / 2, CANVAS_HEIGHT - 14, '[B] Construire', {
+      fontSize: '13px', color: '#f2e0c8', fontFamily: 'monospace', backgroundColor: '#000000aa',
+    }).setOrigin(0.5, 1).setDepth(35).setPadding(8, 5, 8, 5).setInteractive({ useHandCursor: true })
+    this.buildPanel = this.add.text(CANVAS_WIDTH / 2, CANVAS_HEIGHT - 128, '', {
+      fontSize: '12px', color: '#f2f2f2', fontFamily: 'monospace', backgroundColor: '#000000cc',
+    }).setOrigin(0.5, 1).setDepth(35).setPadding(10, 8, 10, 8).setVisible(false)
+    this.storageBuildBtn = this.add.text(CANVAS_WIDTH / 2, CANVAS_HEIGHT - 102, '[📦 Entrepôt · 50 🪵 · 3×3 blocs]', {
+      fontSize: '12px', color: '#c9a37a', fontFamily: 'monospace', backgroundColor: '#24170f',
+    }).setOrigin(0.5, 1).setDepth(36).setPadding(8, 6, 8, 6).setVisible(false).setInteractive({ useHandCursor: true })
+    this.buildTooltip = this.add.text(CANVAS_WIDTH / 2, CANVAS_HEIGHT - 80, '', {
+      fontSize: '11px', color: '#ffcc66', fontFamily: 'monospace',
+    }).setOrigin(0.5, 1).setDepth(36).setVisible(false)
+    this.buildBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).toggleBuildModePanel())
+    this.storageBuildBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activateStoragePlacement())
+    this.diggersBtn = this.add.text(CANVAS_WIDTH / 2 + 140, CANVAS_HEIGHT - 14, '[D] Creuseurs', {
+      fontSize: '13px', color: '#f2e0c8', fontFamily: 'monospace', backgroundColor: '#000000aa',
+    }).setOrigin(0.5, 1).setDepth(35).setPadding(8, 5, 8, 5).setInteractive({ useHandCursor: true })
+    this.diggersPanel = this.add.text(CANVAS_WIDTH / 2 + 140, CANVAS_HEIGHT - 128, '', {
+      fontSize: '12px', color: '#f2f2f2', fontFamily: 'monospace', backgroundColor: '#000000cc',
+    }).setOrigin(0.5, 1).setDepth(35).setPadding(10, 8, 10, 8).setVisible(false)
+    this.diggersMinusBtn = this.add.text(CANVAS_WIDTH / 2 + 88, CANVAS_HEIGHT - 102, '[−]', {
+      fontSize: '14px', color: '#ffcc88', fontFamily: 'monospace', backgroundColor: '#24170f',
+    }).setOrigin(0.5, 1).setDepth(36).setPadding(6, 4, 6, 4).setVisible(false).setInteractive({ useHandCursor: true })
+    this.diggersPlusBtn = this.add.text(CANVAS_WIDTH / 2 + 192, CANVAS_HEIGHT - 102, '[+]', {
+      fontSize: '14px', color: '#88ff88', fontFamily: 'monospace', backgroundColor: '#24170f',
+    }).setOrigin(0.5, 1).setDepth(36).setPadding(6, 4, 6, 4).setVisible(false).setInteractive({ useHandCursor: true })
+    this.diggersBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).toggleDiggersPanel())
+    this.diggersMinusBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).changeDiggers(-1))
+    this.diggersPlusBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).changeDiggers(1))
     this.soundBtn = this.add.text(CANVAS_WIDTH - 16, 12, '', {
       fontSize: '12px',
       color: '#f2dcc3',
@@ -237,8 +291,8 @@ export class UIScene extends Phaser.Scene {
       const wPct = Math.round(100 - this.warriorPct)
       this.statsText.setText(`Ouvrières: ${w}  |  Guerrières: ${wa}  |  Total: ${tot}`)
       this.ratioText.setText(`Répartition naissances → ${wPct}% ouvrières / ${100 - wPct}% guerrières`)
-      this.foodText.setText(`Nourriture: ${Math.floor(colony.resources.food)}`)
-      this.materialsText.setText(`Matériaux: ${Math.floor(colony.resources.materials)}`)
+      this.foodText.setText(`🍖 ${Math.floor(colony.resources.food)} / ${colony.maxFood}`)
+      this.woodText.setText(`🪵 ${Math.floor(colony.resources.wood)} / ${colony.maxWood}`)
     }
 
     if (ts) {
@@ -253,7 +307,8 @@ export class UIScene extends Phaser.Scene {
     if (sel) {
       const name = BUILDING_LABELS[sel.type] ?? sel.type
       const hpBar = `${sel.hp}/${sel.maxHp} PV`
-      const extra = sel.type === 'RESOURCE_CENTER' ? '\n+3 nourriture/s' :
+      const extra = sel.type === 'RESOURCE_CENTER' ? '\nAncien dépôt' :
+                    sel.type === 'STORAGE'          ? '\nStock +500🍖 / +100🪵' :
                     sel.type === 'EGG_CHAMBER'      ? '\nPond des œufs' :
                     sel.type === 'QUEEN_THRONE'      ? '\nGuerrières +20% attaque' :
                     sel.type === 'CEMETERY'          ? '\nDécomposition future' : ''
@@ -265,6 +320,8 @@ export class UIScene extends Phaser.Scene {
     this.renderMinimap(gs)
     this.dangerText.setText(gs.getDangerOverlayText())
     this.lagText.setText(gs.getLagText())
+    this.spawnWarnText.setText(gs.getSpawnWarningText())
+    this.storageWarnText.setText(gs.getStorageWarningText())
     const ph = gs.getPheromonePanelData()
     const dots = (n: number, m: number) => `${'●'.repeat(n)}${'○'.repeat(Math.max(0, m - n))}`
     this.pheroPanel.setText(
@@ -274,6 +331,25 @@ export class UIScene extends Phaser.Scene {
     if (ph.food === 0) this.pheroFoodBtn.setColor(blink); else this.pheroFoodBtn.setColor('#4CAF50')
     if (ph.attack === 0) this.pheroAttackBtn.setColor(blink); else this.pheroAttackBtn.setColor('#F44336')
     if (ph.rally === 0) this.pheroRallyBtn.setColor(blink); else this.pheroRallyBtn.setColor('#FFC107')
+
+    const build = gs.getConstructionData()
+    this.buildBtn.setColor(build.open ? '#ffffff' : '#f2e0c8')
+    this.buildPanel.setVisible(build.open)
+    this.storageBuildBtn.setVisible(build.open)
+    this.buildTooltip.setVisible(build.open && !build.canAffordStorage)
+    this.buildPanel.setText('CONSTRUCTION')
+    this.storageBuildBtn.setColor(build.canAffordStorage ? (build.placingStorage ? '#88ff88' : '#c9a37a') : '#777777')
+    this.storageBuildBtn.setBackgroundColor(build.canAffordStorage ? '#24170f' : '#1a1a1a')
+    this.buildTooltip.setText(build.tooltip)
+
+    const dig = gs.getDiggersData()
+    this.diggersBtn.setColor(dig.open ? '#ffffff' : '#f2e0c8')
+    this.diggersPanel.setVisible(dig.open)
+    this.diggersMinusBtn.setVisible(dig.open)
+    this.diggersPlusBtn.setVisible(dig.open)
+    this.diggersPanel.setText(
+      `Fourmis creuseurs  [D]\n────────────────────────\nAssignées : ${dig.assigned}/${dig.max}\nFile d'attente : ${dig.queue} tunnels\nTemps estimé : ~${dig.estimateSec}s\nCreuseurs : ${dig.activeDiggers} actifs · File : ${dig.queue} tuiles · ~${dig.estimateSec}s restantes`
+    )
   }
 
   private renderMinimap(gs: GameScene): void {

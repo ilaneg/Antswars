@@ -6,28 +6,38 @@ import { Resource, RESOURCE_SPECS } from '../entities/Resource'
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
-  RESOURCE_INITIAL_MIN,
-  RESOURCE_INITIAL_MAX,
-  RESOURCE_RESPAWN_INTERVAL,
-  RESOURCE_RESPAWN_MIN,
-  RESOURCE_RESPAWN_MAX,
-  RESOURCE_BUILDING_MIN_DIST,
+  START_BASES,
 } from '../config/constants'
 
 type Passable = (col: number, row: number) => boolean
 type TileGetter = (col: number, row: number) => number
 
-const RESOURCE_TYPES = Object.values(ResourceType)
+const FOOD_RESOURCE_TYPES = [
+  ResourceType.EARTHWORM,
+  ResourceType.BEETLE,
+  ResourceType.SEED_PILE,
+  ResourceType.DEAD_INSECT,
+]
+const WOOD_RESOURCE_TYPES_WEIGHTED = [
+  ResourceType.LEAF_PILE,
+  ResourceType.LEAF_PILE,
+  ResourceType.LEAF_PILE,
+  ResourceType.LEAF_PILE,
+  ResourceType.LEAF_PILE,
+  ResourceType.TWIG_PILE,
+  ResourceType.TWIG_PILE,
+  ResourceType.TWIG_PILE,
+  ResourceType.TWIG_PILE,
+  ResourceType.BRANCH,
+]
 
 export class ResourceSystem {
   resources: Resource[] = []
-  private lastRespawnAt = 0
 
   init(now: number, tileAt: TileGetter, allBuildings: Building[]): void {
     this.resources = []
-    const count = randInt(RESOURCE_INITIAL_MIN, RESOURCE_INITIAL_MAX)
-    this.spawnBatch(count, now, tileAt, allBuildings)
-    this.lastRespawnAt = now
+    this.spawnBatch(20, now, tileAt, allBuildings)
+    this.spawnSurfaceWoodBatch(15, now, tileAt)
   }
 
   update(
@@ -39,17 +49,12 @@ export class ResourceSystem {
     passable: Passable,
     autoCollect = true
   ): void {
-    if (now - this.lastRespawnAt >= RESOURCE_RESPAWN_INTERVAL) {
-      this.spawnBatch(randInt(RESOURCE_RESPAWN_MIN, RESOURCE_RESPAWN_MAX), now, tileAt, allBuildings)
-      this.lastRespawnAt = now
-    }
-
     if (autoCollect) {
       for (const resource of this.resources) {
         resource.updateNeutralization()
         this.assignNeutralizers(resource, colony, passable)
         this.assignWorkers(resource, colony, passable)
-        this.handleWorkerProgress(resource, colony, passable, delta)
+        this.handleWorkerProgress(resource, colony, passable, delta, now)
       }
     }
 
@@ -64,7 +69,7 @@ export class ResourceSystem {
       }
     }
 
-    this.resources = this.resources.filter(r => !r.isExpired(now) && !r.isDepleted())
+    this.resources = this.resources.filter(r => !r.isDepleted())
   }
 
   private assignNeutralizers(resource: Resource, colony: Colony, passable: Passable): void {
@@ -99,7 +104,7 @@ export class ResourceSystem {
     }
   }
 
-  private handleWorkerProgress(resource: Resource, colony: Colony, passable: Passable, delta: number): void {
+  private handleWorkerProgress(resource: Resource, colony: Colony, passable: Passable, delta: number, now: number): void {
     if (!resource.isNeutralized) return
     const workers = colony.ants.filter(a => a.resourceAssignmentId === resource.id && a.state !== AntState.DEAD)
     if (workers.length === 0) return
@@ -118,18 +123,17 @@ export class ResourceSystem {
     for (let i = 0; i < ticks; i++) {
       const haul = resource.harvest(onSite)
       if (haul.food <= 0 && haul.materials <= 0) break
-      const center = this.getNearestResourceCenter(colony)
+      const center = this.getNearestDropoff(colony)
       for (const worker of workers) {
         if (center) {
           worker.carryingResource = true
           worker.navigateTo({ col: center.tileX + 1, row: center.tileY + 1 }, passable)
         }
       }
-      colony.resources.food += haul.food
-      colony.resources.materials += haul.materials
+      colony.addResources(haul.food, haul.materials, now)
     }
 
-    const center = this.getNearestResourceCenter(colony)
+    const center = this.getNearestDropoff(colony)
     if (center) {
       for (const worker of workers) {
         if (!worker.carryingResource) continue
@@ -184,40 +188,20 @@ export class ResourceSystem {
 
   private spawnBatch(count: number, now: number, tileAt: TileGetter, allBuildings: Building[]): void {
     for (let i = 0; i < count; i++) {
-      const type = RESOURCE_TYPES[Math.floor(Math.random() * RESOURCE_TYPES.length)]
-      if (type === ResourceType.MUSHROOM) {
-        this.spawnMushroomCluster(now, tileAt, allBuildings)
-      } else {
-        const resource = this.trySpawnOne(type, now, tileAt, allBuildings)
-        if (resource) this.resources.push(resource)
-      }
+      const type = FOOD_RESOURCE_TYPES[Math.floor(Math.random() * FOOD_RESOURCE_TYPES.length)]
+      const resource = this.trySpawnOne(type, now, tileAt, allBuildings)
+      if (resource) this.resources.push(resource)
     }
   }
 
-  private spawnMushroomCluster(now: number, tileAt: TileGetter, allBuildings: Building[]): void {
-    const anchor = this.pickValidTile(RESOURCE_SPECS[ResourceType.MUSHROOM].size, tileAt, allBuildings)
-    if (!anchor) return
-    const count = randInt(3, 5)
-    const spots = [{ ...anchor }]
-    const frontier = [{ ...anchor }]
-    while (frontier.length > 0 && spots.length < count) {
-      const current = frontier.shift()!
-      const nexts = [
-        { col: current.col + 1, row: current.row },
-        { col: current.col - 1, row: current.row },
-        { col: current.col, row: current.row + 1 },
-        { col: current.col, row: current.row - 1 },
-      ]
-      for (const n of nexts) {
-        if (spots.length >= count) break
-        if (spots.some(s => s.col === n.col && s.row === n.row)) continue
-        if (!this.isTileValid(n.col, n.row, 1, tileAt, allBuildings)) continue
-        spots.push(n)
-        frontier.push(n)
-      }
-    }
-    for (const pos of spots) {
-      this.resources.push(new Resource(ResourceType.MUSHROOM, pos, now))
+  private spawnSurfaceWoodBatch(count: number, now: number, tileAt: TileGetter): void {
+    for (let i = 0; i < count; i++) {
+      const type = WOOD_RESOURCE_TYPES_WEIGHTED[Math.floor(Math.random() * WOOD_RESOURCE_TYPES_WEIGHTED.length)]
+      const spec = RESOURCE_SPECS[type]
+      const pos = this.pickValidSurfaceTile(spec.size, tileAt)
+      if (!pos) continue
+      const tiles = spec.size === 2 ? [{ ...pos }, { col: pos.col + 1, row: pos.row }] : [{ ...pos }]
+      this.resources.push(new Resource(type, pos, now, tiles))
     }
   }
 
@@ -246,28 +230,36 @@ export class ResourceSystem {
       const tile = tileAt(c, row)
       if (tile !== TileType.DIRT && tile !== TileType.TUNNEL) return false
       if (this.resources.some(r => r.tiles.some(t => t.col === c && t.row === row))) return false
-      for (const b of allBuildings) {
-        const bx = PhaserMath.clamp(c, b.tileX, b.tileX + b.width - 1)
-        const by = PhaserMath.clamp(row, b.tileY, b.tileY + b.height - 1)
-        const dist = Math.abs(c - bx) + Math.abs(row - by)
-        if (dist < RESOURCE_BUILDING_MIN_DIST) return false
+      for (const base of START_BASES) {
+        const dist = Math.abs(c - base.col) + Math.abs(row - base.depth)
+        if (dist < 10) return false
       }
     }
     return true
   }
 
-  private getNearestResourceCenter(colony: Colony): Building | null {
-    const center = colony.buildings.find(b => b.type === 'RESOURCE_CENTER' && b.isAlive())
-    return center ?? null
+  private pickValidSurfaceTile(size: 1 | 2, tileAt: TileGetter): { col: number; row: number } | null {
+    for (let tries = 0; tries < 500; tries++) {
+      const col = Math.floor(Math.random() * (MAP_WIDTH - (size === 2 ? 1 : 0)))
+      const row = 0
+      let ok = true
+      for (let i = 0; i < size; i++) {
+        const c = col + i
+        if (tileAt(c, row) !== TileType.GRASS) { ok = false; break }
+        if (this.resources.some(r => r.tiles.some(t => t.col === c && t.row === row))) { ok = false; break }
+        for (const base of START_BASES) {
+          const dist = Math.abs(c - base.col) + Math.abs(row - base.depth)
+          if (dist < 8) { ok = false; break }
+        }
+      }
+      if (ok) return { col, row }
+    }
+    return null
+  }
+
+  private getNearestDropoff(colony: Colony): Building | null {
+    const dropoff = colony.getDropoffBuilding()
+    return dropoff ?? null
   }
 }
 
-const PhaserMath = {
-  clamp(value: number, min: number, max: number): number {
-    return Math.min(max, Math.max(min, value))
-  },
-}
-
-function randInt(min: number, max: number): number {
-  return min + Math.floor(Math.random() * (max - min + 1))
-}

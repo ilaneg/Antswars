@@ -62,6 +62,7 @@ export class PheromoneSystem {
 
   update(
     delta: number,
+    now: number,
     colony: Colony,
     enemyColony: Colony,
     resourceSystem: ResourceSystem,
@@ -72,7 +73,7 @@ export class PheromoneSystem {
     this.assignedCounts.clear()
 
     const rally = this.points.find(p => p.kind === 'RALLY')
-    const workers = colony.ants.filter(a => a.type === AntType.WORKER && a.state !== AntState.DEAD)
+    const workers = colony.ants.filter(a => a.type === AntType.WORKER && a.state !== AntState.DEAD && !a.digTarget)
     const warriors = colony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
     const all = colony.ants.filter(a => a.state !== AntState.DEAD)
 
@@ -93,20 +94,22 @@ export class PheromoneSystem {
         Math.abs(r.pos.col - p.col) + Math.abs(r.pos.row - p.row) <= 4 && !r.isDepleted()
       )
       if (!nearby) continue
+      const stand = this.closestStandTile(nearby, ant, passable)
+      if (!stand) continue
       if (!ant.carryingResource) {
-        ant.navigateTo({ col: nearby.pos.col, row: nearby.pos.row }, passable)
-        if (Math.abs(ant.col - nearby.pos.col) + Math.abs(ant.row - nearby.pos.row) <= 1) {
-          const haul = nearby.harvest(1)
+        ant.navigateTo(stand, passable)
+        if (ant.col === stand.col && ant.row === stand.row) {
+          const readyWorkers = workers.filter(w => !w.carryingResource && this.isAtResourceStand(w, nearby, passable)).length
+          const haul = nearby.harvest(readyWorkers)
           if (haul.food > 0 || haul.materials > 0) {
             ant.carryingResource = true
-            colony.resources.food += haul.food
-            colony.resources.materials += haul.materials
-            const center = colony.buildings.find(b => b.type === 'RESOURCE_CENTER' && b.isAlive())
+            colony.addResources(haul.food, haul.materials, now)
+            const center = colony.getDropoffBuilding()
             if (center) ant.navigateTo({ col: center.tileX + 1, row: center.tileY + 1 }, passable)
           }
         }
       } else {
-        const center = colony.buildings.find(b => b.type === 'RESOURCE_CENTER' && b.isAlive())
+        const center = colony.getDropoffBuilding()
         if (center && ant.col === center.tileX + 1 && ant.row === center.tileY + 1) {
           ant.carryingResource = false
           ant.navigateTo({ col: p.col, row: p.row }, passable)
@@ -150,6 +153,42 @@ export class PheromoneSystem {
         ant.navigateTo({ col: p.col, row: p.row }, passable)
       }
     }
+  }
+
+  private closestStandTile(
+    resource: { tiles: { col: number; row: number }[] },
+    ant: Ant,
+    passable: Passable
+  ): { col: number; row: number } | null {
+    let best: { col: number; row: number } | null = null
+    let bestDist = Infinity
+    for (const tile of resource.tiles) {
+      const options = [
+        { col: tile.col, row: tile.row },
+        { col: tile.col + 1, row: tile.row },
+        { col: tile.col - 1, row: tile.row },
+        { col: tile.col, row: tile.row + 1 },
+        { col: tile.col, row: tile.row - 1 },
+      ]
+      for (const opt of options) {
+        if (!validTile(opt.col, opt.row) || !passable(opt.col, opt.row)) continue
+        const d = Math.abs(opt.col - ant.col) + Math.abs(opt.row - ant.row)
+        if (d < bestDist) {
+          bestDist = d
+          best = opt
+        }
+      }
+    }
+    return best
+  }
+
+  private isAtResourceStand(
+    ant: Ant,
+    resource: { tiles: { col: number; row: number }[] },
+    passable: Passable
+  ): boolean {
+    const stand = this.closestStandTile(resource, ant, passable)
+    return !!stand && ant.col === stand.col && ant.row === stand.row
   }
 }
 

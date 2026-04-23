@@ -28,9 +28,12 @@ const HUD_H        = 90
 const DIRT_VARIANT_COUNT = 16
 const ROCK_VARIANT_COUNT = 12
 const FLASH_MS = 200
+const FOG_UPDATE_MS = 200
+const STORAGE_WOOD_COST = 50
 
 type HitFlash = { x: number; y: number; expiresAt: number }
 type CorpseTask = { corpseId: string; workerId: string; phase: 'toCorpse' | 'toCemetery' }
+type DigFlash = { tileX: number; tileY: number; expiresAt: number }
 
 export class GameScene extends Phaser.Scene {
   // ── Public (read by UIScene / future systems) ─────────────────────────────
@@ -57,8 +60,10 @@ export class GameScene extends Phaser.Scene {
   private resourceGfx!: Phaser.GameObjects.Graphics
   private combatGfx!: Phaser.GameObjects.Graphics
   private pheroGfx!: Phaser.GameObjects.Graphics
+  private fogGfx!: Phaser.GameObjects.Graphics
   private pheroTextGroup: Phaser.GameObjects.Text[] = []
-  private buildingLabels: Phaser.GameObjects.Text[] = []
+  private resourceTextGroup: Phaser.GameObjects.Text[] = []
+  private buildingLabels = new Map<string, Phaser.GameObjects.Text>()
   private workerSprites = new Map<string, Phaser.GameObjects.Sprite>()
   private warriorSprites = new Map<string, Phaser.GameObjects.Sprite>()
   private dirtVariantStart = TILE_COLORS.length
@@ -75,6 +80,7 @@ export class GameScene extends Phaser.Scene {
   private keyD!: Phaser.Input.Keyboard.Key
   private keyF!: Phaser.Input.Keyboard.Key
   private keyR!: Phaser.Input.Keyboard.Key
+  private keyB!: Phaser.Input.Keyboard.Key
   private hitFlashes: HitFlash[] = []
   private corpseTasks: CorpseTask[] = []
   private audioCtx: AudioContext | null = null
@@ -91,6 +97,22 @@ export class GameScene extends Phaser.Scene {
   private dragMoved = false
   private hoveredPheroId: string | null = null
   private pheroCursor!: Phaser.GameObjects.Graphics
+  private fogVisible: Uint8Array = new Uint8Array(MAP_WIDTH * MAP_HEIGHT)
+  private fogExplored: Uint8Array = new Uint8Array(MAP_WIDTH * MAP_HEIGHT)
+  private discoveredEnemyBuildingIds = new Set<string>()
+  private discoveredResourceIds = new Set<string>()
+  private lastFogRecalcAt = -FOG_UPDATE_MS
+  private pendingSpawnSyncIds = new Set<string>()
+  private buildModeOpen = false
+  private placingStorage = false
+  private buildPreviewCol = 0
+  private buildPreviewRow = 0
+  private buildPreviewValid = false
+  private buildPreviewGfx!: Phaser.GameObjects.Graphics
+  private buildFloatingTexts: Phaser.GameObjects.Text[] = []
+  private destroyedStorageReleased = new Set<string>()
+  private diggerPanelOpen = false
+  private digFlashes: DigFlash[] = []
 
   constructor() { super({ key: 'GameScene' }) }
 
@@ -180,12 +202,16 @@ export class GameScene extends Phaser.Scene {
     this.pheroGfx    = this.add.graphics().setDepth(6.6)
     this.antGfx      = this.add.graphics().setDepth(7)
     this.pheroCursor = this.add.graphics().setDepth(9)
+    this.fogGfx      = this.add.graphics().setDepth(8.9)
+    this.buildPreviewGfx = this.add.graphics().setDepth(9.2)
 
     this.setupCamera()
     this.setupInput()
     this.setupColonies()
     this.localColony = this.role === 'host' ? this.playerColony : this.aiColony
     this.enemyColony = this.role === 'host' ? this.aiColony : this.playerColony
+    this.recalculateFogOfWar(this.time.now)
+    this.centerCameraOnLocalQueenThrone()
     this.prevLocalFood = this.localColony.resources.food
     this.prevEnemyBuildingHp.clear()
     for (const b of this.enemyColony.buildings) this.prevEnemyBuildingHp.set(b.type, b.hp)
@@ -212,10 +238,23 @@ export class GameScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       for (const sprite of this.workerSprites.values()) sprite.destroy()
       for (const sprite of this.warriorSprites.values()) sprite.destroy()
+      for (const label of this.buildingLabels.values()) label.destroy()
+      for (const t of this.buildFloatingTexts) t.destroy()
       this.workerSprites.clear()
       this.warriorSprites.clear()
+      this.buildingLabels.clear()
+      this.buildFloatingTexts = []
     })
     this.scene.launch('UIScene')
+  }
+
+  private centerCameraOnLocalQueenThrone(): void {
+    const myColony = this.role === 'host' ? this.playerColony : this.aiColony
+    const throne = myColony.getQueenThrone()
+    if (!throne) return
+    const x = (throne.tileX + throne.width / 2) * TILE_SIZE
+    const y = (throne.tileY + throne.height / 2) * TILE_SIZE
+    this.cameras.main.centerOn(x, y)
   }
 
   private ensureWorkerAnimation(): void {
@@ -253,7 +292,11 @@ export class GameScene extends Phaser.Scene {
       const prevX = (sprite.getData('prevX') as number | undefined) ?? ant.x
       if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
       sprite.setData('prevX', ant.x)
-      sprite.setPosition(ant.x, ant.y)
+      const jitterX = ant.digTarget && ant.state === AntState.WORKING ? (Math.random() - 0.5) * 2 : 0
+      const jitterY = ant.digTarget && ant.state === AntState.WORKING ? (Math.random() - 0.5) * 2 : 0
+      sprite.setPosition(ant.x + jitterX, ant.y + jitterY)
+      if (this.enemyColony.ants.includes(ant)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
+      else sprite.setVisible(true)
       sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
       if (ant.state === AntState.DEAD) sprite.stop()
       else if (!sprite.anims.isPlaying) sprite.play('worker-ant-walk')
@@ -282,6 +325,8 @@ export class GameScene extends Phaser.Scene {
       if (Math.abs(ant.x - prevX) > 0.1) sprite.setFlipX(ant.x < prevX)
       sprite.setData('prevX', ant.x)
       sprite.setPosition(ant.x, ant.y)
+      if (this.enemyColony.ants.includes(ant)) sprite.setVisible(this.isTileVisible(ant.col, ant.row))
+      else sprite.setVisible(true)
       sprite.setAlpha(ant.state === AntState.DEAD ? 0.45 : 1)
       if (ant.state === AntState.DEAD) sprite.stop()
       else if (!sprite.anims.isPlaying) sprite.play('warrior-ant-walk')
@@ -300,41 +345,28 @@ export class GameScene extends Phaser.Scene {
     this.playerColony = new Colony('PLAYER1', 0)
     this.aiColony     = new Colony('PLAYER2', 1)
 
-    for (let i = 0; i < 7; i++) this.playerColony.spawnAnt(AntType.WORKER)
-    for (let i = 0; i < 3; i++) this.playerColony.spawnAnt(AntType.WARRIOR)
-    this.playerColony.ants.forEach((ant, i) => {
-      (ant as unknown as { behaviorTimer: number }).behaviorTimer = i * 130
-    })
+    this.playerColony.initColony()
+    this.aiColony.initColony()
 
-    this.placeBuildings(this.playerColony, 0)
-    this.placeBuildings(this.aiColony, 1)
+    this.placeBuildings(this.playerColony)
+    this.placeBuildings(this.aiColony)
   }
 
-  private placeBuildings(colony: Colony, baseIndex: 0 | 1): void {
-    const base = START_BASES[baseIndex]
-    const side = colony.side as PlayerSide
-
-    for (const layout of BASE_BUILDING_LAYOUT) {
-      const cfg = BUILDING_CONFIG[layout.type]
-      const building = new Building(
-        layout.type,
-        base.col + layout.dx,
-        base.depth + layout.dy,
-        cfg.width, cfg.height,
-        side,
-        cfg.hp
-      )
-      colony.addBuilding(building)
-
-      // Label centered over building footprint in world space
-      const px = (base.col + layout.dx) * TILE_SIZE + (cfg.width  * TILE_SIZE) / 2
-      const py = (base.depth + layout.dy) * TILE_SIZE + (cfg.height * TILE_SIZE) / 2
-      const label = this.add.text(px, py, cfg.label, {
-        fontSize: '8px', color: '#ffffff', fontFamily: 'monospace',
-        align: 'center', stroke: '#000000', strokeThickness: 2,
-      }).setOrigin(0.5, 0.5).setDepth(8)
-      this.buildingLabels.push(label)
+  private placeBuildings(colony: Colony): void {
+    for (const building of colony.buildings) {
+      this.placeBuildingLabel(building)
     }
+  }
+
+  private placeBuildingLabel(building: Building): void {
+    const cfg = BUILDING_CONFIG[building.type]
+    const px = building.tileX * TILE_SIZE + (cfg.width * TILE_SIZE) / 2
+    const py = building.tileY * TILE_SIZE + (cfg.height * TILE_SIZE) / 2
+    const label = this.add.text(px, py, cfg.label, {
+      fontSize: '8px', color: '#ffffff', fontFamily: 'monospace',
+      align: 'center', stroke: '#000000', strokeThickness: 2,
+    }).setOrigin(0.5, 0.5).setDepth(8)
+    this.buildingLabels.set(building.id, label)
   }
 
   // ─── Map generation ────────────────────────────────────────────────────────
@@ -472,7 +504,6 @@ export class GameScene extends Phaser.Scene {
     const cam = this.cameras.main
     cam.setBounds(0, 0, MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE)
     cam.setZoom(1.5)
-    cam.centerOn((START_BASES[0].col + 3) * TILE_SIZE, START_BASES[0].depth * TILE_SIZE)
   }
 
   private setupInput(): void {
@@ -483,6 +514,7 @@ export class GameScene extends Phaser.Scene {
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
     this.keyF = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F)
     this.keyR = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R)
+    this.keyB = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.B)
 
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main
@@ -499,7 +531,15 @@ export class GameScene extends Phaser.Scene {
       if (ptr.y >= CANVAS_HEIGHT - HUD_H) return
 
       const { col, row } = this.ptrToTile(ptr)
+      this.buildPreviewCol = col
+      this.buildPreviewRow = row
+      this.buildPreviewValid = this.canPlaceStorageAt(col, row)
       this.updatePheromoneModeFromKeys()
+
+      if (this.placingStorage) {
+        this.confirmStoragePlacement(col, row)
+        return
+      }
 
       const hitPhero = this.pheromoneSystem.pointAt(col, row)
       if (hitPhero) {
@@ -529,6 +569,9 @@ export class GameScene extends Phaser.Scene {
 
     this.input.on('pointermove', (ptr: Phaser.Input.Pointer) => {
       const { col, row } = this.ptrToTile(ptr)
+      this.buildPreviewCol = col
+      this.buildPreviewRow = row
+      this.buildPreviewValid = this.canPlaceStorageAt(col, row)
       this.hoveredPheroId = this.pheromoneSystem.pointAt(col, row)?.id ?? null
       if (this.draggingPheroId && ptr.isDown) {
         this.pheromoneSystem.movePoint(this.draggingPheroId, col, row)
@@ -554,8 +597,16 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.input.keyboard!.on('keydown-ESC', () => {
-      if (this.isDrawing) this.cancelDraw()
+      if (this.placingStorage) this.cancelStoragePlacement()
+      else if (this.isDrawing) this.cancelDraw()
       else this.selectedBuilding = null
+    })
+    this.input.keyboard!.on('keydown-B', () => {
+      this.toggleBuildModePanel()
+    })
+    this.input.keyboard!.on('keydown-D', (event: KeyboardEvent) => {
+      if (event.repeat) return
+      this.toggleDiggersPanel()
     })
     this.input.keyboard!.on('keydown-DELETE', () => {
       if (window.confirm('Effacer tous les points ? O/N')) this.pheromoneSystem.clearAll()
@@ -586,7 +637,7 @@ export class GameScene extends Phaser.Scene {
     this.pheroTextGroup = []
 
     const pulse = 1 + 0.15 * (0.5 + 0.5 * Math.sin(now / 750))
-    const center = this.localColony.buildings.find(b => b.type === 'RESOURCE_CENTER')
+    const center = this.localColony.getDropoffBuilding()
     const nestCol = center ? center.tileX + 1 : this.localColony.baseCol + 3
     const nestRow = center ? center.tileY + 1 : this.localColony.baseDepth
     const pointer = this.input.activePointer
@@ -843,9 +894,13 @@ export class GameScene extends Phaser.Scene {
         if (ant) ant.state = AntState.DEAD
       } else if (action.type === 'move') {
         const ant = this.enemyColony.ants.find(a => a.id === action.id)
-        if (ant) ant.setNetworkTarget(action.x, action.y)
+        if (ant) {
+          const col = Math.floor(action.x / TILE_SIZE)
+          const row = Math.floor(action.y / TILE_SIZE)
+          if (this.isTileVisible(col, row)) ant.setNetworkTarget(action.x, action.y)
+        }
       } else if (action.type === 'resource') {
-        this.enemyColony.resources.food += action.amount
+        this.enemyColony.resources.food = Math.min(this.enemyColony.maxFood, this.enemyColony.resources.food + action.amount)
       } else if (action.type === 'damage') {
         const b = this.localColony.buildings.find(build => build.type === action.buildingType)
         if (b) b.hp = Math.max(0, action.hp)
@@ -858,6 +913,7 @@ export class GameScene extends Phaser.Scene {
     this.lastMoveSyncAt = now
     for (const ant of this.localColony.ants) {
       if (ant.state === AntState.DEAD) continue
+      if (!this.isTileVisibleToEnemy(ant.col, ant.row)) continue
       netplay.sendAction({ type: 'move', id: ant.id, x: ant.x, y: ant.y })
     }
   }
@@ -886,6 +942,16 @@ export class GameScene extends Phaser.Scene {
     ]
 
     for (const b of allBuildings) {
+      const isEnemy = this.enemyColony.buildings.includes(b)
+      if (isEnemy) {
+        if (this.isBuildingExplored(b)) this.discoveredEnemyBuildingIds.add(b.id)
+        const known = this.discoveredEnemyBuildingIds.has(b.id)
+        const label = this.buildingLabels.get(b.id)
+        if (label) label.setVisible(known)
+        if (!known) continue
+      }
+      const label = this.buildingLabels.get(b.id)
+      if (label) label.setVisible(true)
       const cfg  = BUILDING_CONFIG[b.type]
       const px   = b.tileX * S
       const py   = b.tileY * S
@@ -915,8 +981,13 @@ export class GameScene extends Phaser.Scene {
 
   private renderResources(now: number): void {
     this.resourceGfx.clear()
+    for (const txt of this.resourceTextGroup) txt.destroy()
+    this.resourceTextGroup = []
     const S = TILE_SIZE
     for (const resource of this.resourceSystem.resources) {
+      const isVisibleNow = resource.tiles.some(t => this.isTileVisible(t.col, t.row))
+      if (isVisibleNow) this.discoveredResourceIds.add(resource.id)
+      if (!this.discoveredResourceIds.has(resource.id)) continue
       const life = Phaser.Math.Clamp((resource.expiresAt - now) / (resource.expiresAt - resource.spawnedAt), 0, 1)
       const color = this.blendColor(resource.color, 0x444444, 1 - life)
       for (const tile of resource.tiles) {
@@ -927,6 +998,16 @@ export class GameScene extends Phaser.Scene {
         this.resourceGfx.lineStyle(1.5, 0x111111, 0.7)
         this.resourceGfx.strokeRect(px + 4, py + 4, S - 8, S - 8)
         this.drawResourceIcon(resource.type, px + S / 2, py + S / 2)
+        if (
+          resource.type === ResourceType.TWIG_PILE ||
+          resource.type === ResourceType.BRANCH ||
+          resource.type === ResourceType.LEAF_PILE
+        ) {
+          const txt = this.add.text(px + S / 2, py + S / 2, '🪵', {
+            fontSize: '13px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 2,
+          }).setOrigin(0.5).setDepth(6.7)
+          this.resourceTextGroup.push(txt)
+        }
       }
 
       if (resource.threatLevel > 0 || resource.guardianCount > 0) {
@@ -934,6 +1015,18 @@ export class GameScene extends Phaser.Scene {
         this.resourceGfx.fillStyle(0xcc3333, 1)
         this.resourceGfx.fillCircle(marker.col * S + S * 0.8, marker.row * S + S * 0.2, 4)
       }
+
+      const marker = resource.tiles[0]
+      const initialFood = Math.max(1, RESOURCE_SPECS[resource.type].food)
+      const ratio = Phaser.Math.Clamp(resource.foodAmount / initialFood, 0, 1)
+      const bw = S * 1.6
+      const bh = 4
+      const bx = marker.col * S + (S - bw) / 2
+      const by = marker.row * S - 7
+      this.resourceGfx.fillStyle(0x111111, 0.85)
+      this.resourceGfx.fillRect(bx, by, bw, bh)
+      this.resourceGfx.fillStyle(0x66dd66, 0.95)
+      this.resourceGfx.fillRect(bx, by, bw * ratio, bh)
     }
   }
 
@@ -960,6 +1053,16 @@ export class GameScene extends Phaser.Scene {
       case ResourceType.PEBBLE_CACHE:
         this.resourceGfx.fillCircle(x - 2, y, 2.5)
         this.resourceGfx.fillCircle(x + 2, y - 1, 2)
+        break
+      case ResourceType.TWIG_PILE:
+        this.resourceGfx.fillRect(x - 4, y - 1, 8, 2)
+        break
+      case ResourceType.BRANCH:
+        this.resourceGfx.fillRect(x - 5, y - 1, 10, 2)
+        this.resourceGfx.fillRect(x - 2, y - 3, 2, 6)
+        break
+      case ResourceType.LEAF_PILE:
+        this.resourceGfx.fillTriangle(x - 3, y + 3, x + 3, y + 3, x, y - 3)
         break
     }
   }
@@ -996,33 +1099,34 @@ export class GameScene extends Phaser.Scene {
 
     for (const task of this.tunnelSystem.getQueue()) {
       const px = task.tileX * S; const py = task.tileY * S
-      this.drawGfx.fillStyle(0xf59342, 0.25)
-      this.drawGfx.fillRect(px, py, S, S)
-      this.strokeDashed(px, py, S, S, 0xf59342)
-    }
-
-    const active = this.tunnelSystem.getActive()
-    if (active) {
-      const px = active.tileX * S; const py = active.tileY * S
+      if (task.progress <= 0) {
+        this.drawGfx.fillStyle(0xf59342, 0.22)
+        this.drawGfx.fillRect(px, py, S, S)
+        this.strokeDashed(px, py, S, S, 0xf59342)
+        continue
+      }
       const pulse = 0.3 + 0.2 * Math.sin(this.dustTick * 0.15)
       this.drawGfx.fillStyle(0xf59342, pulse)
       this.drawGfx.fillRect(px, py, S, S)
-
       const barW = S - 4; const barH = 4
       const bx = px + 2;  const by = py + S - barH - 2
       this.drawGfx.fillStyle(0x111111, 0.8)
       this.drawGfx.fillRect(bx, by, barW, barH)
       this.drawGfx.fillStyle(0x44ee44, 1)
-      this.drawGfx.fillRect(bx, by, barW * active.progress / 100, barH)
-
+      this.drawGfx.fillRect(bx, by, barW * task.progress / 100, barH)
       if (this.dustTick % 3 === 0) {
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 4; i++) {
           const rx = px + Math.random() * S
           const ry = py + Math.random() * S
           this.drawGfx.fillStyle(0xd4a054, 0.3 + Math.random() * 0.5)
-          this.drawGfx.fillCircle(rx, ry, 1 + Math.random() * 2)
+          this.drawGfx.fillRect(rx, ry, 2, 2)
         }
       }
+    }
+    this.digFlashes = this.digFlashes.filter(f => f.expiresAt > this.time.now)
+    for (const f of this.digFlashes) {
+      this.drawGfx.fillStyle(0xffffff, 0.55)
+      this.drawGfx.fillRect(f.tileX * S, f.tileY * S, S, S)
     }
   }
 
@@ -1048,6 +1152,8 @@ export class GameScene extends Phaser.Scene {
   private renderAnts(): void {
     this.antGfx.clear()
     for (const ant of [...this.playerColony.ants, ...this.aiColony.ants]) {
+      const isEnemy = this.enemyColony.ants.includes(ant)
+      if (isEnemy && !this.isTileVisible(ant.col, ant.row)) continue
       const isWorker = ant.type === AntType.WORKER
       const radius   = isWorker ? 5 : 7
       if (ant.carryingResource) {
@@ -1079,11 +1185,13 @@ export class GameScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const now = this.time.now
+    if (now - this.lastFogRecalcAt >= FOG_UPDATE_MS) this.recalculateFogOfWar(now)
     this.updatePheromoneModeFromKeys()
     const cam   = this.cameras.main
     const speed = CAMERA_SCROLL_SPEED * (delta / 1000) / cam.zoom
     const inPheroPlacement = this.pheromoneSystem.mode !== null
-    if (!inPheroPlacement) {
+    const inBuildPlacement = this.placingStorage
+    if (!inPheroPlacement && !inBuildPlacement) {
       if (this.cursors.left.isDown  || this.keyA.isDown) cam.scrollX -= speed
       if (this.cursors.right.isDown || this.keyD.isDown) cam.scrollX += speed
       if (this.cursors.up.isDown    || this.keyW.isDown) cam.scrollY -= speed
@@ -1094,22 +1202,29 @@ export class GameScene extends Phaser.Scene {
       delta,
       this.localColony,
       (c, r) => this.isPassable(c, r),
-      (x, y) => this.completeTile(x, y)
+      (x, y) => {
+        this.completeTile(x, y)
+        this.digFlashes.push({ tileX: x, tileY: y, expiresAt: this.time.now + 180 })
+      }
     )
 
     const beforeSpawnIds = new Set(this.localColony.ants.map(a => a.id))
     this.localColony.update(delta, (c, r) => this.isPassable(c, r))
     if (!this.multiplayer) this.enemyColony.update(delta, (c, r) => this.isPassable(c, r))
-    this.spawnSystem.update(this.localColony, now)
-    if (!this.multiplayer) this.spawnSystem.update(this.enemyColony, now)
+    this.spawnSystem.update(this.localColony, now, false)
+    if (!this.multiplayer) this.spawnSystem.update(this.enemyColony, now, true)
     for (const ant of this.localColony.ants) {
       if (!beforeSpawnIds.has(ant.id) && this.multiplayer) {
-        netplay.sendAction({ type: 'spawn', antType: ant.type, id: ant.id })
+        if (this.isTileVisibleToEnemy(ant.col, ant.row)) netplay.sendAction({ type: 'spawn', antType: ant.type, id: ant.id })
+        else this.pendingSpawnSyncIds.add(ant.id)
       }
     }
+    if (this.multiplayer) this.flushPendingSpawnSync()
     this.updateCombat(now)
+    this.releaseDestroyedStorageTiles()
     this.pheromoneSystem.update(
       delta,
+      now,
       this.localColony,
       this.enemyColony,
       this.resourceSystem,
@@ -1118,6 +1233,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.multiplayer) {
       this.aiPheromoneSystem.update(
         delta,
+        now,
         this.enemyColony,
         this.localColony,
         this.resourceSystem,
@@ -1165,6 +1281,8 @@ export class GameScene extends Phaser.Scene {
     this.renderCombatEffects(now)
     this.updateDrawFeedback()
     this.renderAnts()
+    this.renderBuildPlacementPreview()
+    this.renderFogOfWar()
   }
 
   // ─── Public helpers ────────────────────────────────────────────────────────
@@ -1182,7 +1300,78 @@ export class GameScene extends Phaser.Scene {
     return netplay.isLagging() ? 'LAG' : ''
   }
 
+  getSpawnWarningText(): string {
+    return this.spawnSystem.getWarning(this.localColony, this.time.now)
+  }
+
+  getStorageWarningText(): string {
+    return this.localColony.getStorageWarning(this.time.now)
+  }
+
+  getConstructionData(): {
+    open: boolean
+    storageCost: number
+    canAffordStorage: boolean
+    tooltip: string
+    placingStorage: boolean
+  } {
+    const canAfford = this.localColony.resources.wood >= STORAGE_WOOD_COST
+    return {
+      open: this.buildModeOpen,
+      storageCost: STORAGE_WOOD_COST,
+      canAffordStorage: canAfford,
+      tooltip: canAfford ? '' : '50 bois requis',
+      placingStorage: this.placingStorage,
+    }
+  }
+
+  getDiggersData(): {
+    open: boolean
+    assigned: number
+    max: number
+    queue: number
+    estimateSec: number
+    activeDiggers: number
+  } {
+    return {
+      open: this.diggerPanelOpen,
+      assigned: this.tunnelSystem.getDedicatedWorkers(),
+      max: this.localColony.workerCount,
+      queue: this.tunnelSystem.queueLength,
+      estimateSec: this.tunnelSystem.getEstimatedSeconds(this.localColony),
+      activeDiggers: this.tunnelSystem.getActiveDiggersCount(this.localColony),
+    }
+  }
+
+  toggleDiggersPanel(): void {
+    this.diggerPanelOpen = !this.diggerPanelOpen
+  }
+
+  changeDiggers(delta: number): void {
+    const next = Math.max(0, Math.min(this.localColony.workerCount, this.tunnelSystem.getDedicatedWorkers() + delta))
+    this.tunnelSystem.setDedicatedWorkers(next)
+  }
+
+  toggleBuildModePanel(): void {
+    this.buildModeOpen = !this.buildModeOpen
+    if (!this.buildModeOpen) this.cancelStoragePlacement()
+  }
+
+  activateStoragePlacement(): void {
+    this.buildModeOpen = true
+    if (this.localColony.resources.wood < STORAGE_WOOD_COST) return
+    this.placingStorage = true
+    this.pheromoneSystem.setMode(null)
+    this.cancelDraw()
+  }
+
+  cancelStoragePlacement(): void {
+    this.placingStorage = false
+    this.buildPreviewGfx.clear()
+  }
+
   activatePheromoneMode(kind: 'FOOD' | 'ATTACK' | 'RALLY'): void {
+    this.cancelStoragePlacement()
     this.pheromoneSystem.setMode(kind)
   }
 
@@ -1213,7 +1402,165 @@ export class GameScene extends Phaser.Scene {
 
   isPassable(col: number, row: number): boolean {
     const t = this.getTile(col, row)
-    return t === T.TUNNEL || t === T.GRASS
+    return t === T.TUNNEL || t === T.GRASS || t === T.BUILDING
+  }
+
+  private canPlaceStorageAt(col: number, row: number): boolean {
+    const cfg = BUILDING_CONFIG.STORAGE
+    if (col < 0 || row < 0 || col + cfg.width > MAP_WIDTH || row + cfg.height > MAP_HEIGHT) return false
+    for (let y = row; y < row + cfg.height; y++) {
+      for (let x = col; x < col + cfg.width; x++) {
+        if (this.getTile(x, y) !== T.TUNNEL) return false
+        if (this.findBuildingAt(x, y)) return false
+      }
+    }
+    return true
+  }
+
+  private confirmStoragePlacement(col: number, row: number): void {
+    if (!this.placingStorage) return
+    if (this.localColony.resources.wood < STORAGE_WOOD_COST) return
+    if (!this.canPlaceStorageAt(col, row)) return
+    this.localColony.resources.wood -= STORAGE_WOOD_COST
+    const cfg = BUILDING_CONFIG.STORAGE
+    const building = new Building('STORAGE', col, row, cfg.width, cfg.height, this.localColony.side, cfg.hp)
+    this.localColony.addBuilding(building)
+    this.placeBuildingLabel(building)
+    for (let y = row; y < row + cfg.height; y++) {
+      for (let x = col; x < col + cfg.width; x++) {
+        this.mapData[y][x] = T.BUILDING
+        this.tilemapLayer.putTileAt(T.BUILDING, x, y)
+      }
+    }
+    const text = this.add.text((col + 1.5) * TILE_SIZE, (row + 0.5) * TILE_SIZE, '+500 🍖 +100 🪵', {
+      fontSize: '14px', color: '#66ff88', fontFamily: 'monospace', stroke: '#002200', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(9.4)
+    this.buildFloatingTexts.push(text)
+    this.time.delayedCall(1200, () => {
+      text.destroy()
+      this.buildFloatingTexts = this.buildFloatingTexts.filter(t => t !== text)
+    })
+    this.cancelStoragePlacement()
+    this.buildModeOpen = false
+  }
+
+  private renderBuildPlacementPreview(): void {
+    this.buildPreviewGfx.clear()
+    if (!this.placingStorage) return
+    const cfg = BUILDING_CONFIG.STORAGE
+    const valid = this.canPlaceStorageAt(this.buildPreviewCol, this.buildPreviewRow)
+    const color = valid ? 0x44dd66 : 0xdd4444
+    this.buildPreviewGfx.lineStyle(2, color, 0.95)
+    this.buildPreviewGfx.fillStyle(color, 0.18)
+    this.buildPreviewGfx.fillRect(this.buildPreviewCol * TILE_SIZE, this.buildPreviewRow * TILE_SIZE, cfg.width * TILE_SIZE, cfg.height * TILE_SIZE)
+    this.buildPreviewGfx.strokeRect(this.buildPreviewCol * TILE_SIZE, this.buildPreviewRow * TILE_SIZE, cfg.width * TILE_SIZE, cfg.height * TILE_SIZE)
+  }
+
+  private releaseDestroyedStorageTiles(): void {
+    for (const b of [...this.playerColony.buildings, ...this.aiColony.buildings]) {
+      if (b.type !== 'STORAGE' || b.isAlive() || this.destroyedStorageReleased.has(b.id)) continue
+      for (let y = b.tileY; y < b.tileY + b.height; y++) {
+        for (let x = b.tileX; x < b.tileX + b.width; x++) {
+          if (this.mapData[y][x] === T.BUILDING) {
+            this.mapData[y][x] = T.TUNNEL
+            this.tilemapLayer.putTileAt(T.TUNNEL, x, y)
+          }
+        }
+      }
+      this.destroyedStorageReleased.add(b.id)
+    }
+  }
+
+  private fogIdx(col: number, row: number): number {
+    return row * MAP_WIDTH + col
+  }
+
+  private isTileVisible(col: number, row: number): boolean {
+    if (col < 0 || col >= MAP_WIDTH || row < 0 || row >= MAP_HEIGHT) return false
+    return this.fogVisible[this.fogIdx(col, row)] === 1
+  }
+
+  private isTileExplored(col: number, row: number): boolean {
+    if (col < 0 || col >= MAP_WIDTH || row < 0 || row >= MAP_HEIGHT) return false
+    return this.fogExplored[this.fogIdx(col, row)] === 1
+  }
+
+  private isBuildingExplored(building: Building): boolean {
+    for (let y = building.tileY; y < building.tileY + building.height; y++) {
+      for (let x = building.tileX; x < building.tileX + building.width; x++) {
+        if (this.isTileExplored(x, y)) return true
+      }
+    }
+    return false
+  }
+
+  private revealCircle(centerCol: number, centerRow: number, radiusTiles: number): void {
+    const r2 = radiusTiles * radiusTiles
+    for (let y = centerRow - radiusTiles; y <= centerRow + radiusTiles; y++) {
+      for (let x = centerCol - radiusTiles; x <= centerCol + radiusTiles; x++) {
+        if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) continue
+        const dx = x - centerCol
+        const dy = y - centerRow
+        if ((dx * dx + dy * dy) > r2) continue
+        const idx = this.fogIdx(x, y)
+        this.fogVisible[idx] = 1
+        this.fogExplored[idx] = 1
+      }
+    }
+  }
+
+  private recalculateFogOfWar(now: number): void {
+    this.lastFogRecalcAt = now
+    this.fogVisible.fill(0)
+    const localThrone = this.localColony.getQueenThrone()
+    if (localThrone) this.revealCircle(localThrone.tileX + Math.floor(localThrone.width / 2), localThrone.tileY + Math.floor(localThrone.height / 2), 8)
+    for (const ant of this.localColony.ants) {
+      if (ant.state !== AntState.DEAD) this.revealCircle(ant.col, ant.row, 4)
+    }
+    for (const b of this.localColony.buildings) {
+      if (!b.isAlive()) continue
+      this.revealCircle(b.tileX + Math.floor(b.width / 2), b.tileY + Math.floor(b.height / 2), 5)
+    }
+  }
+
+  private renderFogOfWar(): void {
+    this.fogGfx.clear()
+    this.fogGfx.fillStyle(0x000000, 1)
+    for (let row = 0; row < MAP_HEIGHT; row++) {
+      for (let col = 0; col < MAP_WIDTH; col++) {
+        if (this.isTileVisible(col, row)) continue
+        const alpha = this.isTileExplored(col, row) ? 0.5 : 1
+        this.fogGfx.fillStyle(0x000000, alpha)
+        this.fogGfx.fillRect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+      }
+    }
+  }
+
+  private isTileVisibleToEnemy(col: number, row: number): boolean {
+    const throne = this.enemyColony.getQueenThrone()
+    const visionFrom = (x: number, y: number, r: number): boolean => (x - col) * (x - col) + (y - row) * (y - row) <= r * r
+    if (throne && visionFrom(throne.tileX + Math.floor(throne.width / 2), throne.tileY + Math.floor(throne.height / 2), 8)) return true
+    for (const ant of this.enemyColony.ants) {
+      if (ant.state !== AntState.DEAD && visionFrom(ant.col, ant.row, 4)) return true
+    }
+    for (const b of this.enemyColony.buildings) {
+      if (!b.isAlive()) continue
+      if (visionFrom(b.tileX + Math.floor(b.width / 2), b.tileY + Math.floor(b.height / 2), 5)) return true
+    }
+    return false
+  }
+
+  private flushPendingSpawnSync(): void {
+    for (const id of [...this.pendingSpawnSyncIds]) {
+      const ant = this.localColony.ants.find(a => a.id === id)
+      if (!ant) {
+        this.pendingSpawnSyncIds.delete(id)
+        continue
+      }
+      if (!this.isTileVisibleToEnemy(ant.col, ant.row)) continue
+      netplay.sendAction({ type: 'spawn', antType: ant.type, id: ant.id })
+      this.pendingSpawnSyncIds.delete(id)
+    }
   }
 }
 

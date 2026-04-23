@@ -43,9 +43,6 @@ export class Building {
 
   update(delta: number, _consumeFood: (amount: number) => boolean): BuildingEffect {
     if (!this.isAlive()) return {}
-    if (this.type === 'RESOURCE_CENTER') {
-      return { foodGain: 3 * delta / 1000 }  // +3 food/second passive income
-    }
     return {}
   }
 }

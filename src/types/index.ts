@@ -4,6 +4,7 @@ export enum TileType {
   ROCK   = 2,
   TUNNEL = 3,
   EMPTY  = 4,
+  BUILDING = 5,
 }
 
 export enum AntType {
@@ -27,9 +28,12 @@ export enum ResourceType {
   DEAD_INSECT = 'DEAD_INSECT',
   MUSHROOM = 'MUSHROOM',
   PEBBLE_CACHE = 'PEBBLE_CACHE',
+  TWIG_PILE = 'TWIG_PILE',
+  BRANCH = 'BRANCH',
+  LEAF_PILE = 'LEAF_PILE',
 }
 
-export type BuildingType = 'EGG_CHAMBER' | 'RESOURCE_CENTER' | 'QUEEN_THRONE' | 'CEMETERY'
+export type BuildingType = 'EGG_CHAMBER' | 'RESOURCE_CENTER' | 'QUEEN_THRONE' | 'CEMETERY' | 'STORAGE'
 
 export type PlayerSide = 'PLAYER1' | 'PLAYER2'
 
