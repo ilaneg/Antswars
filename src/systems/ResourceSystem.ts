@@ -36,18 +36,21 @@ export class ResourceSystem {
     tileAt: TileGetter,
     allBuildings: Building[],
     colony: Colony,
-    passable: Passable
+    passable: Passable,
+    autoCollect = true
   ): void {
     if (now - this.lastRespawnAt >= RESOURCE_RESPAWN_INTERVAL) {
       this.spawnBatch(randInt(RESOURCE_RESPAWN_MIN, RESOURCE_RESPAWN_MAX), now, tileAt, allBuildings)
       this.lastRespawnAt = now
     }
 
-    for (const resource of this.resources) {
-      resource.updateNeutralization()
-      this.assignNeutralizers(resource, colony, passable)
-      this.assignWorkers(resource, colony, passable)
-      this.handleWorkerProgress(resource, colony, passable, delta)
+    if (autoCollect) {
+      for (const resource of this.resources) {
+        resource.updateNeutralization()
+        this.assignNeutralizers(resource, colony, passable)
+        this.assignWorkers(resource, colony, passable)
+        this.handleWorkerProgress(resource, colony, passable, delta)
+      }
     }
 
     const assignedIds = new Set(this.resources.map(r => r.id))

@@ -17,6 +17,7 @@ import { SpawnSystem } from '../systems/SpawnSystem'
 import { netplay } from '../systems/Netplay'
 import type { NetAction, NetRole } from '../systems/Netplay'
 import { ResourceType } from '../types'
+import { PheromoneSystem, pheroColor, pheroIcon, pheroRadiusTiles, tileToWorld } from '../systems/PheromoneSystem'
 
 const T = TileType
 
@@ -38,6 +39,8 @@ export class GameScene extends Phaser.Scene {
   aiColony!: Colony
   tunnelSystem!: TunnelSystem
   resourceSystem!: ResourceSystem
+  pheromoneSystem = new PheromoneSystem()
+  aiPheromoneSystem = new PheromoneSystem()
   combatSystem = new CombatSystem()
   spawnSystem = new SpawnSystem()
   selectedBuilding: Building | null = null
@@ -53,6 +56,8 @@ export class GameScene extends Phaser.Scene {
   private buildingGfx!:  Phaser.GameObjects.Graphics
   private resourceGfx!: Phaser.GameObjects.Graphics
   private combatGfx!: Phaser.GameObjects.Graphics
+  private pheroGfx!: Phaser.GameObjects.Graphics
+  private pheroTextGroup: Phaser.GameObjects.Text[] = []
   private buildingLabels: Phaser.GameObjects.Text[] = []
   private dirtVariantStart = TILE_COLORS.length
   private rockVariantStart = TILE_COLORS.length + DIRT_VARIANT_COUNT
@@ -66,6 +71,8 @@ export class GameScene extends Phaser.Scene {
   private keyA!: Phaser.Input.Keyboard.Key
   private keyS!: Phaser.Input.Keyboard.Key
   private keyD!: Phaser.Input.Keyboard.Key
+  private keyF!: Phaser.Input.Keyboard.Key
+  private keyR!: Phaser.Input.Keyboard.Key
   private hitFlashes: HitFlash[] = []
   private corpseTasks: CorpseTask[] = []
   private audioCtx: AudioContext | null = null
@@ -78,6 +85,10 @@ export class GameScene extends Phaser.Scene {
   private lastMoveSyncAt = 0
   private prevEnemyBuildingHp = new Map<string, number>()
   private prevLocalFood = 0
+  private draggingPheroId: string | null = null
+  private dragMoved = false
+  private hoveredPheroId: string | null = null
+  private pheroCursor!: Phaser.GameObjects.Graphics
 
   constructor() { super({ key: 'GameScene' }) }
 
@@ -158,7 +169,9 @@ export class GameScene extends Phaser.Scene {
     this.resourceGfx = this.add.graphics().setDepth(6)
     this.drawGfx     = this.add.graphics().setDepth(6)
     this.combatGfx   = this.add.graphics().setDepth(6.8)
+    this.pheroGfx    = this.add.graphics().setDepth(6.6)
     this.antGfx      = this.add.graphics().setDepth(7)
+    this.pheroCursor = this.add.graphics().setDepth(9)
 
     this.setupCamera()
     this.setupInput()
@@ -184,6 +197,9 @@ export class GameScene extends Phaser.Scene {
           fontSize: '26px', color: '#ff6666', fontFamily: 'monospace', stroke: '#000', strokeThickness: 6,
         }).setOrigin(0.5).setDepth(60).setScrollFactor(0)
       }
+    } else {
+      this.aiPheromoneSystem.addPoint('FOOD', this.aiColony.baseCol + 8, this.aiColony.baseDepth + 8)
+      this.aiPheromoneSystem.addPoint('ATTACK', this.playerColony.baseCol + 6, this.playerColony.baseDepth + 6)
     }
     this.scene.launch('UIScene')
   }
@@ -375,6 +391,8 @@ export class GameScene extends Phaser.Scene {
     this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A)
     this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S)
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
+    this.keyF = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F)
+    this.keyR = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R)
 
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main
@@ -385,14 +403,25 @@ export class GameScene extends Phaser.Scene {
       if (!this.audioCtx) this.audioCtx = new window.AudioContext()
       if (ptr.rightButtonDown()) {
         this.cancelDraw()
-        const { col, row } = this.ptrToTile(ptr)
-        this.sendWarriorsTo(col, row)
         return
       }
       if (!ptr.leftButtonDown()) return
       if (ptr.y >= CANVAS_HEIGHT - HUD_H) return
 
       const { col, row } = this.ptrToTile(ptr)
+      this.updatePheromoneModeFromKeys()
+
+      const hitPhero = this.pheromoneSystem.pointAt(col, row)
+      if (hitPhero) {
+        this.draggingPheroId = hitPhero.id
+        this.dragMoved = false
+        return
+      }
+
+      if (this.pheromoneSystem.mode) {
+        this.pheromoneSystem.addPoint(this.pheromoneSystem.mode, col, row)
+        return
+      }
 
       // Building selection (buildings are on TUNNEL tiles, so check first)
       const hit = this.findBuildingAt(col, row)
@@ -409,9 +438,14 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.input.on('pointermove', (ptr: Phaser.Input.Pointer) => {
+      const { col, row } = this.ptrToTile(ptr)
+      this.hoveredPheroId = this.pheromoneSystem.pointAt(col, row)?.id ?? null
+      if (this.draggingPheroId && ptr.isDown) {
+        this.pheromoneSystem.movePoint(this.draggingPheroId, col, row)
+        this.dragMoved = true
+      }
       if (!this.isDrawing || !ptr.isDown) return
 
-      const { col, row } = this.ptrToTile(ptr)
       const last = this.drawPath[this.drawPath.length - 1]
       if (col === last.col && row === last.row) return
       if (Math.abs(col - last.col) + Math.abs(row - last.row) !== 1) return
@@ -422,12 +456,22 @@ export class GameScene extends Phaser.Scene {
     })
 
     this.input.on('pointerup', (ptr: Phaser.Input.Pointer) => {
+      if (this.draggingPheroId) {
+        if (!this.dragMoved) this.pheromoneSystem.removePoint(this.draggingPheroId)
+        this.draggingPheroId = null
+      }
       if (ptr.leftButtonReleased() && this.isDrawing) this.confirmDraw()
     })
 
     this.input.keyboard!.on('keydown-ESC', () => {
       if (this.isDrawing) this.cancelDraw()
       else this.selectedBuilding = null
+    })
+    this.input.keyboard!.on('keydown-DELETE', () => {
+      if (window.confirm('Effacer tous les points ? O/N')) this.pheromoneSystem.clearAll()
+    })
+    this.input.keyboard!.on('keydown-BACKSPACE', () => {
+      if (window.confirm('Effacer tous les points ? O/N')) this.pheromoneSystem.clearAll()
     })
   }
 
@@ -436,6 +480,98 @@ export class GameScene extends Phaser.Scene {
   private ptrToTile(ptr: Phaser.Input.Pointer): { col: number; row: number } {
     const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y)
     return { col: Math.floor(wp.x / TILE_SIZE), row: Math.floor(wp.y / TILE_SIZE) }
+  }
+
+  private updatePheromoneModeFromKeys(): void {
+    if (this.keyF.isDown) this.pheromoneSystem.setMode('FOOD')
+    else if (this.keyA.isDown) this.pheromoneSystem.setMode('ATTACK')
+    else if (this.keyR.isDown) this.pheromoneSystem.setMode('RALLY')
+    else this.pheromoneSystem.setMode(null)
+  }
+
+  private renderPheromones(now: number): void {
+    this.pheroGfx.clear()
+    this.pheroCursor.clear()
+    for (const txt of this.pheroTextGroup) txt.destroy()
+    this.pheroTextGroup = []
+
+    const pulse = 1 + 0.15 * (0.5 + 0.5 * Math.sin(now / 750))
+    const center = this.localColony.buildings.find(b => b.type === 'RESOURCE_CENTER')
+    const nestCol = center ? center.tileX + 1 : this.localColony.baseCol + 3
+    const nestRow = center ? center.tileY + 1 : this.localColony.baseDepth
+    const pointer = this.input.activePointer
+    this.updatePheromoneModeFromKeys()
+
+    for (const p of this.pheromoneSystem.points) {
+      const { x, y } = tileToWorld(p.col, p.row)
+      const color = pheroColor(p.kind)
+      this.pheroGfx.fillStyle(color, 0.85)
+      this.pheroGfx.fillCircle(x, y, 24)
+      this.pheroGfx.lineStyle(2, color, 0.9)
+      this.pheroGfx.strokeCircle(x, y, 24 * pulse)
+
+      const icon = this.add.text(x, y, pheroIcon(p.kind), {
+        fontSize: '18px', color: '#ffffff', fontFamily: 'monospace', stroke: '#000', strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(8.5)
+      const badge = this.add.text(x + 18, y - 18, `×${this.pheromoneSystem.assignedCounts.get(p.id) ?? 0}`, {
+        fontSize: '12px', color: '#111', backgroundColor: '#fff', fontFamily: 'monospace',
+      }).setOrigin(0.5).setDepth(8.5)
+      this.pheroTextGroup.push(icon, badge)
+
+      if (this.hoveredPheroId === p.id && pheroRadiusTiles(p.kind) > 0) {
+        this.drawDashedCircle(this.pheroGfx, x, y, pheroRadiusTiles(p.kind) * TILE_SIZE, color)
+      }
+
+      const path = this.pheromoneSystem.getTrailPath(nestCol, nestRow, p.col, p.row, (c, r) => this.isPassable(c, r))
+      this.drawDashedTrail(path, color, this.pheromoneSystem.dashOffset)
+    }
+
+    if (this.pheromoneSystem.mode) {
+      const wp = this.cameras.main.getWorldPoint(pointer.x, pointer.y)
+      this.pheroCursor.lineStyle(2, pheroColor(this.pheromoneSystem.mode), 0.95)
+      this.pheroCursor.strokeCircle(wp.x, wp.y, 16)
+      this.input.setDefaultCursor('copy')
+    } else {
+      this.input.setDefaultCursor('crosshair')
+    }
+  }
+
+  private drawDashedTrail(path: { col: number; row: number }[], color: number, offset: number): void {
+    if (path.length < 2) return
+    this.pheroGfx.lineStyle(2, color, 0.3)
+    for (let i = 1; i < path.length; i++) {
+      const a = tileToWorld(path[i - 1].col, path[i - 1].row)
+      const b = tileToWorld(path[i].col, path[i].row)
+      const len = Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y)
+      const dash = 8; const gap = 6
+      let p = -offset
+      while (p < len) {
+        const s = Math.max(0, p)
+        const e = Math.min(len, p + dash)
+        if (e > s) {
+          const t1 = s / len; const t2 = e / len
+          this.pheroGfx.lineBetween(
+            Phaser.Math.Linear(a.x, b.x, t1),
+            Phaser.Math.Linear(a.y, b.y, t1),
+            Phaser.Math.Linear(a.x, b.x, t2),
+            Phaser.Math.Linear(a.y, b.y, t2)
+          )
+        }
+        p += dash + gap
+      }
+    }
+  }
+
+  private drawDashedCircle(gfx: Phaser.GameObjects.Graphics, x: number, y: number, radius: number, color: number): void {
+    gfx.lineStyle(1.5, color, 0.8)
+    const seg = 28
+    for (let i = 0; i < seg; i += 2) {
+      const a1 = (i / seg) * Math.PI * 2
+      const a2 = ((i + 1) / seg) * Math.PI * 2
+      gfx.beginPath()
+      gfx.arc(x, y, radius, a1, a2, false)
+      gfx.strokePath()
+    }
   }
 
   private touchesTunnel(col: number, row: number): boolean {
@@ -455,25 +591,6 @@ export class GameScene extends Phaser.Scene {
   private cancelDraw(): void {
     this.drawPath  = []
     this.isDrawing = false
-  }
-
-  private sendWarriorsTo(col: number, row: number): void {
-    for (const ant of this.playerColony.ants) {
-      if (ant.type !== AntType.WARRIOR || ant.state === AntState.DEAD) continue
-      if (ant.combatAssignmentId) continue
-      ant.attackMoveTarget = { col, row }
-      ant.navigateTo({ col, row }, (c, r) => this.isPassable(c, r))
-      ant.setBehaviorCooldown(100)
-    }
-  }
-
-  private issueAiAttackOrders(): void {
-    const target = { col: this.playerColony.baseCol + 4, row: this.playerColony.baseDepth + 4 }
-    for (const ant of this.aiColony.ants) {
-      if (ant.type !== AntType.WARRIOR || ant.state === AntState.DEAD) continue
-      if (ant.attackMoveTarget) continue
-      ant.attackMoveTarget = target
-    }
   }
 
   private updateCombat(now: number): void {
@@ -863,6 +980,12 @@ export class GameScene extends Phaser.Scene {
         this.antGfx.fillStyle(0xffffff, 0.9)
         this.antGfx.fillCircle(ant.x, ant.y - radius - 3, 2.5)
       }
+      if (ant.waitingForTunnel) {
+        const warn = this.add.text(ant.x, ant.y - radius - 10, '⚠', {
+          fontSize: '12px', color: '#ffcc44', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3,
+        }).setOrigin(0.5).setDepth(8.6)
+        this.pheroTextGroup.push(warn)
+      }
     }
   }
 
@@ -870,12 +993,16 @@ export class GameScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const now = this.time.now
+    this.updatePheromoneModeFromKeys()
     const cam   = this.cameras.main
     const speed = CAMERA_SCROLL_SPEED * (delta / 1000) / cam.zoom
-    if (this.cursors.left.isDown  || this.keyA.isDown) cam.scrollX -= speed
-    if (this.cursors.right.isDown || this.keyD.isDown) cam.scrollX += speed
-    if (this.cursors.up.isDown    || this.keyW.isDown) cam.scrollY -= speed
-    if (this.cursors.down.isDown  || this.keyS.isDown) cam.scrollY += speed
+    const inPheroPlacement = this.pheromoneSystem.mode !== null
+    if (!inPheroPlacement) {
+      if (this.cursors.left.isDown  || this.keyA.isDown) cam.scrollX -= speed
+      if (this.cursors.right.isDown || this.keyD.isDown) cam.scrollX += speed
+      if (this.cursors.up.isDown    || this.keyW.isDown) cam.scrollY -= speed
+      if (this.cursors.down.isDown  || this.keyS.isDown) cam.scrollY += speed
+    }
 
     this.tunnelSystem.update(
       delta,
@@ -886,7 +1013,6 @@ export class GameScene extends Phaser.Scene {
 
     const beforeSpawnIds = new Set(this.localColony.ants.map(a => a.id))
     this.localColony.update(delta, (c, r) => this.isPassable(c, r))
-    if (!this.multiplayer) this.issueAiAttackOrders()
     if (!this.multiplayer) this.enemyColony.update(delta, (c, r) => this.isPassable(c, r))
     this.spawnSystem.update(this.localColony, now)
     if (!this.multiplayer) this.spawnSystem.update(this.enemyColony, now)
@@ -896,18 +1022,33 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.updateCombat(now)
-    this.updateCorpseHandling()
-    this.updateFrontLineAndAlerts(now)
+    this.pheromoneSystem.update(
+      delta,
+      this.localColony,
+      this.enemyColony,
+      this.resourceSystem,
+      (c, r) => this.isPassable(c, r)
+    )
     if (!this.multiplayer) {
-      this.resourceSystem.update(
-        now,
+      this.aiPheromoneSystem.update(
         delta,
-        (c, r) => this.getTile(c, r),
-        [...this.playerColony.buildings, ...this.aiColony.buildings],
+        this.enemyColony,
         this.localColony,
+        this.resourceSystem,
         (c, r) => this.isPassable(c, r)
       )
     }
+    this.updateCorpseHandling()
+    this.updateFrontLineAndAlerts(now)
+    this.resourceSystem.update(
+      now,
+      delta,
+      (c, r) => this.getTile(c, r),
+      [...this.playerColony.buildings, ...this.aiColony.buildings],
+      this.localColony,
+      (c, r) => this.isPassable(c, r),
+      false
+    )
     if (this.multiplayer && this.localColony.resources.food > this.prevLocalFood) {
       netplay.sendAction({
         type: 'resource',
@@ -932,6 +1073,7 @@ export class GameScene extends Phaser.Scene {
 
     this.renderBuildings()
     this.renderResources(now)
+    this.renderPheromones(now)
     this.renderCombatEffects(now)
     this.updateDrawFeedback()
     this.renderAnts()
@@ -950,6 +1092,24 @@ export class GameScene extends Phaser.Scene {
   getLagText(): string {
     if (!this.multiplayer) return ''
     return netplay.isLagging() ? 'LAG' : ''
+  }
+
+  activatePheromoneMode(kind: 'FOOD' | 'ATTACK' | 'RALLY'): void {
+    this.pheromoneSystem.setMode(kind)
+  }
+
+  getPheromonePanelData(): {
+    food: number
+    attack: number
+    rally: number
+    warning: string
+  } {
+    return {
+      food: this.pheromoneSystem.count('FOOD'),
+      attack: this.pheromoneSystem.count('ATTACK'),
+      rally: this.pheromoneSystem.count('RALLY'),
+      warning: this.pheromoneSystem.warningMessage,
+    }
   }
 
   getTile(col: number, row: number): number {

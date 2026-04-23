@@ -31,6 +31,10 @@ export class UIScene extends Phaser.Scene {
   private minimapGfx!: Phaser.GameObjects.Graphics
   private dangerText!: Phaser.GameObjects.Text
   private lagText!: Phaser.GameObjects.Text
+  private pheroPanel!: Phaser.GameObjects.Text
+  private pheroFoodBtn!: Phaser.GameObjects.Text
+  private pheroAttackBtn!: Phaser.GameObjects.Text
+  private pheroRallyBtn!: Phaser.GameObjects.Text
 
   private warriorPct = 30
 
@@ -141,6 +145,23 @@ export class UIScene extends Phaser.Scene {
       stroke: '#221100',
       strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(30)
+
+    this.pheroPanel = this.add.text(12, CANVAS_HEIGHT - 170, '', {
+      fontSize: '13px', color: '#f2f2f2', fontFamily: 'monospace',
+      backgroundColor: '#00000099',
+    }).setOrigin(0, 0).setDepth(30).setPadding(8, 6, 8, 6)
+    this.pheroFoodBtn = this.add.text(18, CANVAS_HEIGHT - 162, '[F] Collecte', {
+      fontSize: '12px', color: '#4CAF50', fontFamily: 'monospace',
+    }).setDepth(31).setInteractive({ useHandCursor: true })
+    this.pheroAttackBtn = this.add.text(18, CANVAS_HEIGHT - 144, '[A] Attaque', {
+      fontSize: '12px', color: '#F44336', fontFamily: 'monospace',
+    }).setDepth(31).setInteractive({ useHandCursor: true })
+    this.pheroRallyBtn = this.add.text(18, CANVAS_HEIGHT - 126, '[R] Ralliement', {
+      fontSize: '12px', color: '#FFC107', fontFamily: 'monospace',
+    }).setDepth(31).setInteractive({ useHandCursor: true })
+    this.pheroFoodBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('FOOD'))
+    this.pheroAttackBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('ATTACK'))
+    this.pheroRallyBtn.on('pointerdown', () => (this.scene.get('GameScene') as GameScene).activatePheromoneMode('RALLY'))
   }
 
   private pushRatio(): void {
@@ -188,6 +209,15 @@ export class UIScene extends Phaser.Scene {
     this.renderMinimap(gs)
     this.dangerText.setText(gs.getDangerOverlayText())
     this.lagText.setText(gs.getLagText())
+    const ph = gs.getPheromonePanelData()
+    const dots = (n: number, m: number) => `${'●'.repeat(n)}${'○'.repeat(Math.max(0, m - n))}`
+    this.pheroPanel.setText(
+      `${dots(ph.food, 5)}  ${ph.food}/5\n${dots(ph.attack, 3)}  ${ph.attack}/3\n${dots(ph.rally, 1)}  ${ph.rally}/1\n${ph.warning}`
+    )
+    const blink = ((this.time.now / 500) | 0) % 2 === 0 ? '#ff6666' : '#aa3333'
+    if (ph.food === 0) this.pheroFoodBtn.setColor(blink); else this.pheroFoodBtn.setColor('#4CAF50')
+    if (ph.attack === 0) this.pheroAttackBtn.setColor(blink); else this.pheroAttackBtn.setColor('#F44336')
+    if (ph.rally === 0) this.pheroRallyBtn.setColor(blink); else this.pheroRallyBtn.setColor('#FFC107')
   }
 
   private renderMinimap(gs: GameScene): void {

@@ -5,6 +5,7 @@ let _nextId = 0
 
 type Passable = (col: number, row: number) => boolean
 type TilePos   = { col: number; row: number }
+export type PheromoneType = 'FOOD' | 'ATTACK' | 'RALLY'
 
 export class Ant {
   readonly id: string
@@ -26,6 +27,9 @@ export class Ant {
   carryingCorpseId: string | null = null
   netTargetX: number | null = null
   netTargetY: number | null = null
+  pheromoneId: string | null = null
+  pheromoneType: PheromoneType | null = null
+  waitingForTunnel = false
   digTarget: TilePos | null = null   // set by TunnelSystem when assigned a dig task
 
   private path: TilePos[] = []
@@ -107,6 +111,11 @@ export class Ant {
     this.netTargetY = y
   }
 
+  setPheromoneAssignment(id: string | null, type: PheromoneType | null): void {
+    this.pheromoneId = id
+    this.pheromoneType = type
+  }
+
   updateNetworkInterpolation(delta: number): void {
     if (this.netTargetX === null || this.netTargetY === null || this.state === AntState.DEAD) return
     const alpha = Math.min(1, delta / 100)
@@ -132,6 +141,10 @@ export class Ant {
    * 3. Wander nearby tunnels
    */
   private workerBehavior(passable: Passable): void {
+    if (this.pheromoneId) {
+      this.state = this.carryingResource ? AntState.CARRYING : AntState.WORKING
+      return
+    }
     if (this.resourceAssignmentId) {
       this.state = this.carryingResource ? AntState.CARRYING : AntState.WORKING
       return
@@ -152,10 +165,9 @@ export class Ant {
       return
     }
 
-    // No task → wander
-    const target = this.randomNearby(8, passable)
-    if (target) this.path = Ant.aStar({ col: this.col, row: this.row }, target, passable)
-    this.behaviorTimer = 1500 + Math.random() * 2000
+    // No pheromone/task -> stay idle in nest.
+    this.state = AntState.IDLE
+    this.behaviorTimer = 250
   }
 
   /**
@@ -164,6 +176,10 @@ export class Ant {
    * 2. Patrol around homePos
    */
   private warriorBehavior(passable: Passable): void {
+    if (this.pheromoneId) {
+      this.state = AntState.FIGHTING
+      return
+    }
     if (this.combatAssignmentId) {
       this.state = AntState.FIGHTING
       return
@@ -179,9 +195,8 @@ export class Ant {
       }
     }
 
-    const target = this.randomNearby(3, passable, this.homePos)
-    if (target) this.path = Ant.aStar({ col: this.col, row: this.row }, target, passable)
-    this.behaviorTimer = 2500 + Math.random() * 2000
+    this.state = AntState.IDLE
+    this.behaviorTimer = 250
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -193,17 +208,6 @@ export class Ant {
   private adjacentPassable(pos: TilePos, passable: Passable): TilePos | null {
     for (const [dc, dr] of [[0,-1],[0,1],[-1,0],[1,0]] as [number,number][]) {
       const nc = pos.col + dc; const nr = pos.row + dr
-      if (passable(nc, nr)) return { col: nc, row: nr }
-    }
-    return null
-  }
-
-  private randomNearby(radius: number, passable: Passable, center?: TilePos): TilePos | null {
-    const cx = center?.col ?? this.col
-    const cy = center?.row ?? this.row
-    for (let i = 0; i < 25; i++) {
-      const nc = cx + Math.round((Math.random() * 2 - 1) * radius)
-      const nr = cy + Math.round((Math.random() * 2 - 1) * radius)
       if (passable(nc, nr)) return { col: nc, row: nr }
     }
     return null
