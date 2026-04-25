@@ -12,12 +12,6 @@ import {
 type Passable = (col: number, row: number) => boolean
 type TileGetter = (col: number, row: number) => number
 
-const FOOD_RESOURCE_TYPES = [
-  ResourceType.EARTHWORM,
-  ResourceType.BEETLE,
-  ResourceType.SEED_PILE,
-  ResourceType.DEAD_INSECT,
-]
 const WOOD_RESOURCE_TYPES_WEIGHTED = [
   ResourceType.LEAF_PILE,
   ResourceType.LEAF_PILE,
@@ -31,12 +25,18 @@ const WOOD_RESOURCE_TYPES_WEIGHTED = [
   ResourceType.BRANCH,
 ]
 
+const EXTRACTION_TIME_MS = 10_000
+
 export class ResourceSystem {
   resources: Resource[] = []
+  private extractionTimers = new Map<string, number>()  // resourceId → startedAt
 
   init(now: number, tileAt: TileGetter, allBuildings: Building[]): void {
     this.resources = []
-    this.spawnBatch(20, now, tileAt, allBuildings)
+    this.spawnExact(ResourceType.EARTHWORM,   30, now, tileAt, allBuildings)
+    this.spawnExact(ResourceType.SEED_PILE,   20, now, tileAt, allBuildings)
+    this.spawnExact(ResourceType.DEAD_INSECT, 15, now, tileAt, allBuildings)
+    this.spawnExact(ResourceType.BEETLE,      10, now, tileAt, allBuildings)
     this.spawnSurfaceWoodBatch(15, now, tileAt)
   }
 
@@ -70,9 +70,20 @@ export class ResourceSystem {
     }
 
     this.resources = this.resources.filter(r => !r.isDepleted())
+    for (const id of [...this.extractionTimers.keys()]) {
+      if (!assignedIds.has(id)) this.extractionTimers.delete(id)
+    }
   }
 
   private assignNeutralizers(resource: Resource, colony: Colony, passable: Passable): void {
+    const livingWarriorIds = new Set(
+      colony.ants
+        .filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
+        .map(a => a.id)
+    )
+    for (const id of [...resource.assignedWarriors]) {
+      if (!livingWarriorIds.has(id)) resource.assignedWarriors.delete(id)
+    }
     if (!resource.isDangerous || resource.isNeutralized) return
     const warriors = colony.ants.filter(a => a.type === AntType.WARRIOR && a.state !== AntState.DEAD)
     const available = warriors.filter(a => !a.combatAssignmentId)
@@ -89,6 +100,14 @@ export class ResourceSystem {
   }
 
   private assignWorkers(resource: Resource, colony: Colony, passable: Passable): void {
+    const livingWorkerIds = new Set(
+      colony.ants
+        .filter(a => a.type === AntType.WORKER && a.state !== AntState.DEAD)
+        .map(a => a.id)
+    )
+    for (const id of [...resource.assignedWorkers]) {
+      if (!livingWorkerIds.has(id)) resource.assignedWorkers.delete(id)
+    }
     if (!resource.isNeutralized) return
     const workers = colony.ants.filter(a => a.type === AntType.WORKER && a.state !== AntState.DEAD)
     const available = workers.filter(a => !a.resourceAssignmentId && !a.digTarget)
@@ -107,30 +126,11 @@ export class ResourceSystem {
   private handleWorkerProgress(resource: Resource, colony: Colony, passable: Passable, _delta: number, now: number): void {
     if (!resource.isNeutralized) return
     const workers = colony.ants.filter(a => a.resourceAssignmentId === resource.id && a.state !== AntState.DEAD)
-    if (workers.length === 0) return
+    if (workers.length === 0) { this.extractionTimers.delete(resource.id); return }
 
-    let onSite = 0
-    for (const worker of workers) {
-      const standTile = this.closestStandTile(worker, resource, passable)
-      if (!standTile) continue
-      if (worker.col === standTile.col && worker.row === standTile.row && !worker.carryingResource) {
-        onSite++
-      }
-    }
-    if (onSite <= 0) return
-
-    const haul = resource.harvest(onSite)
     const center = this.getNearestDropoff(colony)
-    if (haul.food > 0 || haul.materials > 0) {
-      colony.addResources(haul.food, haul.materials, now)
-      if (center) {
-        for (const worker of workers) {
-          worker.carryingResource = true
-          worker.navigateTo({ col: center.tileX + 1, row: center.tileY + 1 }, passable)
-        }
-      }
-    }
 
+    // Drop-off: workers that arrived at storage reset carry flag
     if (center) {
       const dropCol = center.tileX + 1
       const dropRow = center.tileY + 1
@@ -140,7 +140,35 @@ export class ResourceSystem {
       }
     }
 
+    // Count workers on site (not carrying)
+    let onSite = 0
+    for (const worker of workers) {
+      const stand = this.closestStandTile(worker, resource, passable)
+      if (stand && worker.col === stand.col && worker.row === stand.row && !worker.carryingResource) onSite++
+    }
+
+    if (onSite >= resource.requiredWorkers) {
+      if (!this.extractionTimers.has(resource.id)) this.extractionTimers.set(resource.id, now)
+      const elapsed = now - (this.extractionTimers.get(resource.id) ?? now)
+      if (elapsed >= EXTRACTION_TIME_MS) {
+        const haul = resource.harvest(onSite)
+        this.extractionTimers.delete(resource.id)
+        if ((haul.food > 0 || haul.materials > 0) && center) {
+          colony.addResources(haul.food, haul.materials, now)
+          for (const worker of workers) {
+            if (!worker.carryingResource) {
+              worker.carryingResource = true
+              worker.navigateTo({ col: center.tileX + 1, row: center.tileY + 1 }, passable)
+            }
+          }
+        }
+      }
+    } else {
+      this.extractionTimers.delete(resource.id)
+    }
+
     if (resource.isDepleted()) {
+      this.extractionTimers.delete(resource.id)
       for (const ant of colony.ants) {
         if (ant.resourceAssignmentId === resource.id) { ant.resourceAssignmentId = null; ant.carryingResource = false }
         if (ant.combatAssignmentId === resource.id) ant.combatAssignmentId = null
@@ -180,9 +208,8 @@ export class ResourceSystem {
     return best
   }
 
-  private spawnBatch(count: number, now: number, tileAt: TileGetter, allBuildings: Building[]): void {
+  private spawnExact(type: ResourceType, count: number, now: number, tileAt: TileGetter, allBuildings: Building[]): void {
     for (let i = 0; i < count; i++) {
-      const type = FOOD_RESOURCE_TYPES[Math.floor(Math.random() * FOOD_RESOURCE_TYPES.length)]
       const resource = this.trySpawnOne(type, now, tileAt, allBuildings)
       if (resource) this.resources.push(resource)
     }

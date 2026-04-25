@@ -47,7 +47,7 @@ export const ROCK_HP = 500
 
 // Spawn
 export const EGG_SPAWN_INTERVAL = 8000 // ms per ant from egg chamber
-export const SPAWN_FOOD_DRAIN = 50      // food per spawned ant
+export const SPAWN_FOOD_DRAIN = 10      // food per spawned ant
 
 // Camera
 export const CAMERA_SCROLL_SPEED = 400

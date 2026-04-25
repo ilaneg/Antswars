@@ -6,6 +6,7 @@ let _nextId = 0
 type ResourceSpec = {
   food: number
   materials: number
+  harvestAmount: number
   size: 1 | 2
   threatLevel: 0 | 1 | 2 | 3
   requiredWorkers: number
@@ -14,15 +15,15 @@ type ResourceSpec = {
 }
 
 export const RESOURCE_SPECS: Record<ResourceType, ResourceSpec> = {
-  [ResourceType.EARTHWORM]:   { food: 500, materials: 0, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0xc78f4e },
-  [ResourceType.BEETLE]:      { food: 300, materials: 0, size: 1, threatLevel: 1, requiredWorkers: 1, requiredWarriors: 2, color: 0x6a4a2f },
-  [ResourceType.SEED_PILE]:   { food: 200, materials: 0, size: 2, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0xb59a4c },
-  [ResourceType.DEAD_INSECT]: { food: 150, materials: 0, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x7b3a2d },
-  [ResourceType.MUSHROOM]:    { food: 60, materials: 0,  size: 1, threatLevel: 2, requiredWorkers: 2, requiredWarriors: 2, color: 0xa07ac7 },
-  [ResourceType.PEBBLE_CACHE]:{ food: 0,  materials: 50, size: 2, threatLevel: 0, requiredWorkers: 4, requiredWarriors: 0, color: 0x8c8c8c },
-  [ResourceType.TWIG_PILE]:   { food: 0,  materials: 30, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x8b5a2b },
-  [ResourceType.BRANCH]:      { food: 0,  materials: 80, size: 2, threatLevel: 0, requiredWorkers: 2, requiredWarriors: 0, color: 0x6b4226 },
-  [ResourceType.LEAF_PILE]:   { food: 0,  materials: 20, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x4e8b3a },
+  [ResourceType.EARTHWORM]:   { food: 500, materials: 0,   harvestAmount: 50, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0xc78f4e },
+  [ResourceType.BEETLE]:      { food: 300, materials: 0,   harvestAmount: 20, size: 1, threatLevel: 1, requiredWorkers: 1, requiredWarriors: 2, color: 0x6a4a2f },
+  [ResourceType.SEED_PILE]:   { food: 200, materials: 0,   harvestAmount: 20, size: 2, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0xb59a4c },
+  [ResourceType.DEAD_INSECT]: { food: 150, materials: 0,   harvestAmount: 20, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x7b3a2d },
+  [ResourceType.MUSHROOM]:    { food: 60,  materials: 0,   harvestAmount: 20, size: 1, threatLevel: 2, requiredWorkers: 2, requiredWarriors: 2, color: 0xa07ac7 },
+  [ResourceType.PEBBLE_CACHE]:{ food: 0,   materials: 50,  harvestAmount: 20, size: 2, threatLevel: 0, requiredWorkers: 4, requiredWarriors: 0, color: 0x8c8c8c },
+  [ResourceType.TWIG_PILE]:   { food: 0,   materials: 100, harvestAmount: 20, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x8b5a2b },
+  [ResourceType.BRANCH]:      { food: 0,   materials: 200, harvestAmount: 20, size: 2, threatLevel: 0, requiredWorkers: 2, requiredWarriors: 0, color: 0x6b4226 },
+  [ResourceType.LEAF_PILE]:   { food: 0,   materials: 20,  harvestAmount: 20, size: 1, threatLevel: 0, requiredWorkers: 1, requiredWarriors: 0, color: 0x4e8b3a },
 }
 
 export class Resource {
@@ -92,13 +93,11 @@ export class Resource {
   }
 
   harvest(workerCount: number): { food: number; materials: number } {
-    if (!this.isNeutralized || workerCount <= 0) return { food: 0, materials: 0 }
-    if (workerCount < this.requiredWorkers) return { food: 0, materials: 0 }
-    const woodTypes = new Set<ResourceType>([ResourceType.TWIG_PILE, ResourceType.BRANCH, ResourceType.LEAF_PILE])
-    const isWood = woodTypes.has(this.type)
-    const food = isWood ? 0 : Math.min(this.foodAmount, 10)
-    const materials = isWood ? Math.min(this.materialsAmount, 5) : 0
-    this.foodAmount -= food
+    if (!this.isNeutralized || workerCount < this.requiredWorkers) return { food: 0, materials: 0 }
+    const amt = RESOURCE_SPECS[this.type].harvestAmount
+    const food      = Math.min(this.foodAmount, amt)
+    const materials = Math.min(this.materialsAmount, amt)
+    this.foodAmount      -= food
     this.materialsAmount -= materials
     return { food, materials }
   }

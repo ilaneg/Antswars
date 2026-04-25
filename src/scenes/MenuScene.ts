@@ -4,6 +4,7 @@ import { netplay } from '../systems/Netplay'
 
 export class MenuScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text
+  private bgm: Phaser.Sound.BaseSound | null = null
 
   constructor() {
     super({ key: 'MenuScene' })
@@ -13,6 +14,7 @@ export class MenuScene extends Phaser.Scene {
     this.load.image('menu-bg', '/menu-bg-new.png')
     this.load.image('btn-host', '/btn-host.png')
     this.load.image('btn-join', '/btn-join.png')
+    this.load.audio('bgm-main', '/aria-math-cover.mp3')
   }
 
   create(): void {
@@ -27,6 +29,8 @@ export class MenuScene extends Phaser.Scene {
 
     const hostBtn = this.createImageButton(cx, cy - 20, 'btn-host')
     const joinBtn = this.createImageButton(cx, cy + 230, 'btn-join-clean')
+    this.tryStartBgm()
+    this.input.once('pointerdown', () => this.tryStartBgm())
 
     const startBetaSolo = () => {
       netplay.reset()
@@ -120,6 +124,19 @@ export class MenuScene extends Phaser.Scene {
       strokeThickness: 2,
       fontFamily: 'monospace',
     }).setOrigin(0.5)
+  }
+
+  private tryStartBgm(): void {
+    if (this.sound.mute || this.sound.locked) return
+    const existing = this.sound.get('bgm-main')
+    if (existing) {
+      this.bgm = existing
+      if (this.bgm.isPaused) this.bgm.resume()
+      else if (!this.bgm.isPlaying) this.bgm.play()
+      return
+    }
+    this.bgm = this.sound.add('bgm-main', { loop: true, volume: 0.35 })
+    this.bgm.play()
   }
 
   private createImageButton(x: number, y: number, key: string): Phaser.GameObjects.Image {

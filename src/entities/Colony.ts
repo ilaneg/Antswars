@@ -2,7 +2,7 @@ import type { BuildingType, PlayerSide } from '../types'
 import { AntType } from '../types'
 import { Ant } from './Ant'
 import { Building } from './Building'
-import { BUILDING_CONFIG, MAX_ANTS, START_BASES } from '../config/constants'
+import { BASE_BUILDING_LAYOUT, BUILDING_CONFIG, MAX_ANTS, START_BASES } from '../config/constants'
 
 type Passable = (col: number, row: number) => boolean
 
@@ -38,7 +38,7 @@ export class Colony {
     return this.sandboxResourceCaps?.food ?? (100 + (this.storageCount * 500))
   }
   get maxWood(): number {
-    return this.sandboxResourceCaps?.wood ?? (20 + (this.storageCount * 100))
+    return this.sandboxResourceCaps?.wood ?? (200 + (this.storageCount * 100))
   }
 
   /** Plafonds fixes pour tester (beaucoup de ressources sans construire d’entrepôts). */
@@ -49,17 +49,21 @@ export class Colony {
   // ─── Spawning ──────────────────────────────────────────────────────────────
 
   initColony(): void {
-    const throneCfg = BUILDING_CONFIG.QUEEN_THRONE
-    const queenThrone = new Building(
-      'QUEEN_THRONE',
-      this.baseCol + 5,
-      this.baseDepth + 1,
-      throneCfg.width,
-      throneCfg.height,
-      this.side,
-      throneCfg.hp
-    )
-    this.addBuilding(queenThrone)
+    for (const layout of BASE_BUILDING_LAYOUT) {
+      const cfg = BUILDING_CONFIG[layout.type]
+      const building = new Building(
+        layout.type,
+        this.baseCol + layout.dx,
+        this.baseDepth + layout.dy,
+        cfg.width,
+        cfg.height,
+        this.side,
+        cfg.hp
+      )
+      this.addBuilding(building)
+    }
+
+    this.resources.wood = 50
 
     for (let i = 0; i < 4; i++) this.spawnAnt(AntType.WORKER)
     this.spawnAnt(AntType.WARRIOR)

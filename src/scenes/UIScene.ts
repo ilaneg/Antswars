@@ -66,7 +66,7 @@ export class UIScene extends Phaser.Scene {
   constructor() { super({ key: 'UIScene' }) }
 
   preload(): void {
-    this.load.audio('ambient-underground-river', '/ambient-underground-river.mp3')
+    this.load.audio('bgm-main', '/aria-math-cover.mp3')
   }
 
   create(): void {
@@ -247,18 +247,12 @@ export class UIScene extends Phaser.Scene {
 
     this.tryStartAmbient()
     this.input.once('pointerdown', () => this.tryStartAmbient())
-    this.events.once('shutdown', () => {
-      this.ambientSound?.stop()
-      this.ambientSound?.destroy()
-      this.ambientSound = null
-    })
   }
 
   private tryStartAmbient(): void {
-    if (this.ambientSound?.isPlaying) return
     if (this.sound.locked) return
     if (!this.ambientSound) {
-      this.ambientSound = this.sound.add('ambient-underground-river', { loop: true, volume: 0.22 })
+      this.ambientSound = this.sound.get('bgm-main') ?? this.sound.add('bgm-main', { loop: true, volume: 0.35 })
     }
     if (this.ambientMuted) return
     if (this.ambientSound.isPaused) this.ambientSound.resume()

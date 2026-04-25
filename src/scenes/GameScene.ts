@@ -1326,7 +1326,7 @@ export class GameScene extends Phaser.Scene {
       [...this.playerColony.buildings, ...this.aiColony.buildings],
       this.localColony,
       (c, r) => this.isPassable(c, r),
-      false
+      true
     )
     if (this.multiplayer && this.localColony.resources.food > this.prevLocalFood) {
       netplay.sendAction({

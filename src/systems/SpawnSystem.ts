@@ -1,6 +1,6 @@
 import type { Colony } from '../entities/Colony'
 import { AntType } from '../types'
-import { EGG_SPAWN_INTERVAL, SPAWN_FOOD_DRAIN } from '../config/constants'
+import { EGG_SPAWN_INTERVAL, FOOD_WARRIOR_COST, FOOD_WORKER_COST } from '../config/constants'
 
 export class SpawnSystem {
   private incubating = new Map<string, { startedAt: number; type: AntType }>()
@@ -10,7 +10,7 @@ export class SpawnSystem {
   /** Called each tick — egg chamber starts incubation only if food cost is paid. */
   update(colony: Colony, now: number, isAiControlled = false): void {
     if (isAiControlled) {
-      if (colony.resources.food < SPAWN_FOOD_DRAIN) this.aiRecovering.add(colony.side)
+      if (colony.resources.food < FOOD_WORKER_COST) this.aiRecovering.add(colony.side)
       if (this.aiRecovering.has(colony.side) && colony.resources.food >= 150) {
         this.aiRecovering.delete(colony.side)
       }
@@ -23,13 +23,14 @@ export class SpawnSystem {
 
       const pending = this.incubating.get(building.id)
       if (pending) {
-        // If food reserve drops under 50 during incubation, egg is cancelled with no refund.
-        if (colony.resources.food < SPAWN_FOOD_DRAIN) {
-          this.incubating.delete(building.id)
+        if (now - pending.startedAt < EGG_SPAWN_INTERVAL) continue
+        const foodCost = this.getFoodCost(pending.type)
+        if (colony.resources.food < foodCost) {
+          this.warningUntil.set(colony.side, now + 2000)
           continue
         }
-        if (now - pending.startedAt < EGG_SPAWN_INTERVAL) continue
-        colony.spawnAnt(pending.type)
+        const spawned = colony.spawnAnt(pending.type)
+        if (spawned) colony.resources.food -= foodCost
         this.incubating.delete(building.id)
         continue
       }
@@ -40,11 +41,11 @@ export class SpawnSystem {
   }
 
   spawnAnt(colony: Colony, type: AntType, eggChamberId: string, now: number): boolean {
-    if (colony.resources.food < SPAWN_FOOD_DRAIN) {
+    const foodCost = this.getFoodCost(type)
+    if (colony.resources.food < foodCost) {
       this.warningUntil.set(colony.side, now + 2000)
       return false
     }
-    colony.resources.food -= SPAWN_FOOD_DRAIN
     this.incubating.set(eggChamberId, { startedAt: now, type })
     return true
   }
@@ -52,5 +53,9 @@ export class SpawnSystem {
   getWarning(colony: Colony, now: number): string {
     const until = this.warningUntil.get(colony.side) ?? 0
     return now <= until ? 'Nourriture insuffisante' : ''
+  }
+
+  private getFoodCost(type: AntType): number {
+    return type === AntType.WARRIOR ? FOOD_WARRIOR_COST : FOOD_WORKER_COST
   }
 }
