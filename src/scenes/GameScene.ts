@@ -2,7 +2,7 @@ import Phaser from 'phaser'
 import {
   MAP_WIDTH, MAP_HEIGHT, TILE_SIZE,
   CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, CAMERA_SCROLL_SPEED,
-  TILE_COLORS, START_BASES, CANVAS_HEIGHT,
+  TILE_COLORS, START_BASES, CANVAS_HEIGHT, SURFACE_ROWS,
   BUILDING_CONFIG,
   BETA_SANDBOX_MAX_FOOD, BETA_SANDBOX_MAX_WOOD,
   BETA_SANDBOX_START_FOOD, BETA_SANDBOX_START_WOOD,
@@ -148,6 +148,7 @@ export class GameScene extends Phaser.Scene {
   preload(): void {
     this.load.image('dirt-texture', '/dirt-texture.png')
     this.load.image('rock-texture', '/rock-texture.png')
+    this.load.image('surface-bg', '/surface-bg.png')
     this.load.image('worker-ant-1', '/worker-ant-1.png')
     this.load.image('worker-ant-2', '/worker-ant-2.png')
     this.load.image('warrior-ant-1', '/warrior-ant-1.png')
@@ -211,6 +212,18 @@ export class GameScene extends Phaser.Scene {
     this.ensureWorkerAnimation()
     this.ensureWarriorAnimation()
     this.buildTilesetTexture()
+
+    // Surface background — visible in the sky area above the underground map
+    const mapPixelW = MAP_WIDTH * TILE_SIZE
+    const bgH = CANVAS_HEIGHT
+    if (this.textures.exists('surface-bg')) {
+      this.add.image(0, -bgH, 'surface-bg')
+        .setOrigin(0, 0)
+        .setDisplaySize(mapPixelW, bgH)
+        .setDepth(-2)
+        .setScrollFactor(0.15, 0.08)
+    }
+
     this.mapData = this.generateMap()
     this.buildTilemap()
     this.buildingGfx = this.add.graphics().setDepth(5)
@@ -408,9 +421,9 @@ export class GameScene extends Phaser.Scene {
 
   private generateMap(): number[][] {
     const grid: number[][] = Array.from({ length: MAP_HEIGHT }, (_, row) =>
-      new Array<number>(MAP_WIDTH).fill(row === 0 ? T.GRASS : T.DIRT)
+      new Array<number>(MAP_WIDTH).fill(row < SURFACE_ROWS ? T.GRASS : T.DIRT)
     )
-    for (let row = 2; row < MAP_HEIGHT; row++) {
+    for (let row = SURFACE_ROWS + 1; row < MAP_HEIGHT; row++) {
       for (let col = 0; col < MAP_WIDTH; col++) {
         if (grid[row][col] === T.DIRT && !this.inBaseZone(col, row) && this.seededRand() < 0.08)
           this.growCluster(grid, row, col)
@@ -548,7 +561,7 @@ export class GameScene extends Phaser.Scene {
 
   private setupCamera(): void {
     const cam = this.cameras.main
-    cam.setBounds(0, 0, MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE)
+    cam.setBounds(0, -CANVAS_HEIGHT, MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE + CANVAS_HEIGHT)
     cam.setZoom(1.5)
   }
 

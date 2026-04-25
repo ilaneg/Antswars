@@ -2,6 +2,7 @@
 export const TILE_SIZE = 32
 export const MAP_WIDTH = 160   // tiles
 export const MAP_HEIGHT = 80   // tiles
+export const SURFACE_ROWS = 4  // number of grass rows at the top surface
 
 // Ant speeds (pixels per second)
 export const ANT_WORKER_SPEED = 60

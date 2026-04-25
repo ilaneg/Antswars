@@ -9,7 +9,16 @@
       "PowerShell(Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; $env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"User\"\\); Set-Location \"C:\\\\Users\\\\annet\\\\OneDrive\\\\Bureau\\\\ants wars\"; npx vite --port 3000 2>&1)",
       "PowerShell(Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; $env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"User\"\\); Set-Location \"C:\\\\Users\\\\annet\\\\OneDrive\\\\Bureau\\\\ants wars\"; npx tsc --noEmit 2>&1)",
       "Bash(npm run *)",
-      "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; cd \"C:\\\\Users\\\\annet\\\\OneDrive\\\\Bureau\\\\ants wars\"; npm run build 2>&1)"
+      "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; cd \"C:\\\\Users\\\\annet\\\\OneDrive\\\\Bureau\\\\ants wars\"; npm run build 2>&1)",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 pull)",
+      "Bash(where node *)",
+      "Bash(where python *)",
+      "Bash(where python3 *)",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 stash)",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 stash pop)",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 add .)",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 commit -m \"texture\")",
+      "Bash(git -C /c/Users/ilane/Desktop/Antswars/.claude/worktrees/bold-ptolemy-ddaf10 push)"
     ]
   }
 }
