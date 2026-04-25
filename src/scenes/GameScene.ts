@@ -20,6 +20,7 @@ import type { NetAction, NetRole } from '../systems/Netplay'
 import { ResourceType } from '../types'
 import { RESOURCE_SPECS } from '../entities/Resource'
 import { PheromoneSystem, pheroColor, pheroIcon, pheroRadiusTiles, tileToWorld } from '../systems/PheromoneSystem'
+import { loadPlayerSettings } from '../config/playerSettings'
 
 const T = TileType
 
@@ -78,12 +79,13 @@ export class GameScene extends Phaser.Scene {
   private dustTick  = 0
 
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
-  private keyW!: Phaser.Input.Keyboard.Key
-  private keyA!: Phaser.Input.Keyboard.Key
-  private keyS!: Phaser.Input.Keyboard.Key
-  private keyD!: Phaser.Input.Keyboard.Key
-  private keyF!: Phaser.Input.Keyboard.Key
-  private keyR!: Phaser.Input.Keyboard.Key
+  private moveUpKey!: Phaser.Input.Keyboard.Key
+  private moveLeftKey!: Phaser.Input.Keyboard.Key
+  private moveDownKey!: Phaser.Input.Keyboard.Key
+  private moveRightKey!: Phaser.Input.Keyboard.Key
+  private pheroFoodKey!: Phaser.Input.Keyboard.Key
+  private pheroAttackKey!: Phaser.Input.Keyboard.Key
+  private pheroRallyKey!: Phaser.Input.Keyboard.Key
   private hitFlashes: HitFlash[] = []
   private corpseTasks: CorpseTask[] = []
   private audioCtx: AudioContext | null = null
@@ -551,13 +553,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
+    const settings = loadPlayerSettings()
     this.cursors = this.input.keyboard!.createCursorKeys()
-    this.keyW = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W)
-    this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A)
-    this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S)
-    this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
-    this.keyF = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F)
-    this.keyR = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R)
+    this.moveUpKey = this.input.keyboard!.addKey(settings.controls.moveUp)
+    this.moveLeftKey = this.input.keyboard!.addKey(settings.controls.moveLeft)
+    this.moveDownKey = this.input.keyboard!.addKey(settings.controls.moveDown)
+    this.moveRightKey = this.input.keyboard!.addKey(settings.controls.moveRight)
+    this.pheroFoodKey = this.input.keyboard!.addKey(settings.controls.pheromoneFood)
+    this.pheroAttackKey = this.input.keyboard!.addKey(settings.controls.pheromoneAttack)
+    this.pheroRallyKey = this.input.keyboard!.addKey(settings.controls.pheromoneRally)
 
     this.input.on('wheel', (_p: unknown, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main
@@ -642,10 +646,10 @@ export class GameScene extends Phaser.Scene {
       else if (this.isDrawing) this.cancelDraw()
       else this.selectedBuilding = null
     })
-    this.input.keyboard!.on('keydown-B', () => {
+    this.input.keyboard!.on(`keydown-${settings.controls.buildPanel}`, () => {
       this.toggleBuildModePanel()
     })
-    this.input.keyboard!.on('keydown-D', (event: KeyboardEvent) => {
+    this.input.keyboard!.on(`keydown-${settings.controls.diggersPanel}`, (event: KeyboardEvent) => {
       if (event.repeat) return
       this.toggleDiggersPanel()
     })
@@ -661,9 +665,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updatePheromoneModeFromKeys(): void {
-    if (this.keyF.isDown) this.pheromoneSystem.setMode('FOOD')
-    else if (this.keyA.isDown) this.pheromoneSystem.setMode('ATTACK')
-    else if (this.keyR.isDown) this.pheromoneSystem.setMode('RALLY')
+    if (this.pheroFoodKey.isDown) this.pheromoneSystem.setMode('FOOD')
+    else if (this.pheroAttackKey.isDown) this.pheromoneSystem.setMode('ATTACK')
+    else if (this.pheroRallyKey.isDown) this.pheromoneSystem.setMode('RALLY')
     else this.pheromoneSystem.setMode(null)
   }
 
@@ -1269,10 +1273,10 @@ export class GameScene extends Phaser.Scene {
     const inPheroPlacement = this.pheromoneSystem.mode !== null
     const inBuildPlacement = this.placingStorage
     if (!inPheroPlacement && !inBuildPlacement) {
-      if (this.cursors.left.isDown  || this.keyA.isDown) cam.scrollX -= speed
-      if (this.cursors.right.isDown || this.keyD.isDown) cam.scrollX += speed
-      if (this.cursors.up.isDown    || this.keyW.isDown) cam.scrollY -= speed
-      if (this.cursors.down.isDown  || this.keyS.isDown) cam.scrollY += speed
+      if (this.cursors.left.isDown  || this.moveLeftKey.isDown) cam.scrollX -= speed
+      if (this.cursors.right.isDown || this.moveRightKey.isDown) cam.scrollX += speed
+      if (this.cursors.up.isDown    || this.moveUpKey.isDown) cam.scrollY -= speed
+      if (this.cursors.down.isDown  || this.moveDownKey.isDown) cam.scrollY += speed
     }
 
     this.tunnelSystem.update(

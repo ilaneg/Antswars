@@ -3,6 +3,7 @@ import { CANVAS_WIDTH, CANVAS_HEIGHT, MAP_WIDTH, MAP_HEIGHT } from '../config/co
 import { ResourceType } from '../types'
 import { RESOURCE_SPECS } from '../entities/Resource'
 import type { GameScene } from './GameScene'
+import { loadPlayerSettings } from '../config/playerSettings'
 
 const HUD_H    = 90
 const HUD_TOP  = CANVAS_HEIGHT - HUD_H       // 630
@@ -70,6 +71,8 @@ export class UIScene extends Phaser.Scene {
   }
 
   create(): void {
+    const settings = loadPlayerSettings()
+    this.ambientMuted = settings.soundMuted
     this.cameras.main.setScroll(0, 0)
 
     // ── HUD background ──────────────────────────────────────────────────────
@@ -144,11 +147,11 @@ export class UIScene extends Phaser.Scene {
 
     // ── CENTER-BOTTOM: [B] and [D] buttons ──────────────────────────────────
     // Positioned at center-bottom of HUD, separated enough to not overlap popups
-    this.buildBtn = this.add.text(cx - 50, CANVAS_HEIGHT - 12, '[B] Construire', {
+    this.buildBtn = this.add.text(cx - 50, CANVAS_HEIGHT - 12, `[${settings.controls.buildPanel}] Construire`, {
       fontSize: '12px', color: '#f2e0c8', fontFamily: 'monospace', backgroundColor: '#000000aa',
     }).setOrigin(0.5, 1).setDepth(35).setPadding(7, 4, 7, 4).setInteractive({ useHandCursor: true })
 
-    this.diggersBtn = this.add.text(cx + 80, CANVAS_HEIGHT - 12, '[D] Creuseurs', {
+    this.diggersBtn = this.add.text(cx + 80, CANVAS_HEIGHT - 12, `[${settings.controls.diggersPanel}] Creuseurs`, {
       fontSize: '12px', color: '#f2e0c8', fontFamily: 'monospace', backgroundColor: '#000000aa',
     }).setOrigin(0.5, 1).setDepth(35).setPadding(7, 4, 7, 4).setInteractive({ useHandCursor: true })
 
@@ -198,15 +201,15 @@ export class UIScene extends Phaser.Scene {
       backgroundColor: '#00000099',
     }).setOrigin(0, 0).setDepth(30).setPadding(8, 6, 8, 6)
 
-    this.pheroFoodBtn = this.add.text(22, HUD_TOP - 74, '[F] Collecte', {
+    this.pheroFoodBtn = this.add.text(22, HUD_TOP - 74, `[${settings.controls.pheromoneFood}] Collecte`, {
       fontSize: '12px', color: '#4CAF50', fontFamily: 'monospace',
     }).setDepth(31).setInteractive({ useHandCursor: true })
 
-    this.pheroAttackBtn = this.add.text(22, HUD_TOP - 56, '[A] Attaque', {
+    this.pheroAttackBtn = this.add.text(22, HUD_TOP - 56, `[${settings.controls.pheromoneAttack}] Attaque`, {
       fontSize: '12px', color: '#F44336', fontFamily: 'monospace',
     }).setDepth(31).setInteractive({ useHandCursor: true })
 
-    this.pheroRallyBtn = this.add.text(22, HUD_TOP - 38, '[R] Ralliement', {
+    this.pheroRallyBtn = this.add.text(22, HUD_TOP - 38, `[${settings.controls.pheromoneRally}] Ralliement`, {
       fontSize: '12px', color: '#FFC107', fontFamily: 'monospace',
     }).setDepth(31).setInteractive({ useHandCursor: true })
 
@@ -252,8 +255,10 @@ export class UIScene extends Phaser.Scene {
   private tryStartAmbient(): void {
     if (this.sound.locked) return
     if (!this.ambientSound) {
-      this.ambientSound = this.sound.get('bgm-main') ?? this.sound.add('bgm-main', { loop: true, volume: 0.35 })
+      this.ambientSound = this.sound.get('bgm-main') ?? this.sound.add('bgm-main', { loop: true, volume: loadPlayerSettings().musicVolume })
     }
+    const controllable = this.ambientSound as Phaser.Sound.WebAudioSound | Phaser.Sound.HTML5AudioSound
+    controllable.setVolume(loadPlayerSettings().musicVolume)
     if (this.ambientMuted) return
     if (this.ambientSound.isPaused) this.ambientSound.resume()
     else if (!this.ambientSound.isPlaying) this.ambientSound.play()
